@@ -40,13 +40,36 @@ void require_uc_constant_draws(const Draws &draws, const VarSpec &spec, const ar
     }
     require_uc_coefficient_draws(spec, draws.a, draws.c, draws.tau0, draws.irregular_inv,
                                  draws.trend, draws.cycle, tt);
+    require_uc_extension_draws(spec, draws.rho, draws.signal, draws.signal_noise_inv,
+                               draws.tau0.n_cols);
+}
+
+/// Draw i's damped trend and signal equations, as the filter and the forecast
+/// read them. `signal_s` and `signal_x` are the sample's, tt x m and tt x r.
+template <typename Draws>
+UcExtension uc_extension_at(const VarSpec &spec, const Draws &draws, const arma::mat &signal_s,
+                            const arma::mat &signal_x, const arma::uword i)
+{
+    UcExtension ext;
+    if (spec.trend == UcTrend::damped)
+    {
+        ext.rho = draws.rho.col(i);
+    }
+    ext.signal =
+        uc_signal_terms_at(spec, draws.signal, draws.signal_noise_inv, signal_s, signal_x, i);
+    return ext;
 }
 
 /// The pointwise log density over the periods of `y`, one row per draw, with
 /// the trend -- and the cycle, under an irregular component -- integrated out.
+/// With signals, the density of a period of the sample is that of the series
+/// and the signals jointly given everything before it, and of a period past
+/// the sample -- a scored one, which has no signals -- that of the series.
 template <typename Draws>
 arma::mat uc_constant_filtered_log_density(const VarSpec &spec, const Draws &draws,
-                                           const arma::mat &y, const arma::mat &d)
+                                           const arma::mat &y, const arma::mat &d,
+                                           const arma::mat &signal_s = arma::mat(),
+                                           const arma::mat &signal_x = arma::mat())
 {
     const arma::uword k = static_cast<arma::uword>(spec.k);
     const arma::uword shocks = 2 * k;
@@ -58,9 +81,15 @@ arma::mat uc_constant_filtered_log_density(const VarSpec &spec, const Draws &dra
                                               draws.irregular_inv, i);
         const arma::mat q = arma::reshape(draws.u_sigma_inv.col(i), shocks, shocks);
         const arma::mat sigma = uc_covariance_of_precision(q);
-        const UcStateSpace ss = state_space(spec, one.phi, sigma);
+        const UcExtension ext = uc_extension_at(spec, draws, signal_s, signal_x, i);
+        const UcStateSpace ss = state_space(spec, one.phi, sigma, ext);
         UcFilterTerms terms;
         terms.irregular_var = one.irregular_var;
+        if (ext.signal.active())
+        {
+            terms.signal_offset = ext.signal.offset;
+            terms.signal_var = 1.0 / ext.signal.precision;
+        }
         // Under UcCycleInit::stationary the cycle before the sample is
         // integrated out from its stationary distribution, as the trend path is.
         const arma::mat initial_cycle_cov =
@@ -111,9 +140,10 @@ void require_uc_forecastable(const VarSpec &spec, const ForecastData &forecast,
             std::to_string(spec.n) + ", got " + std::to_string(forecast.x.n_rows) + " x " +
             std::to_string(forecast.x.n_cols));
     }
-    if (spec.trend == UcTrend::smooth && tt < 2)
+    if (spec.uc_trend_order() == 2 && tt < 2)
     {
-        throw std::invalid_argument("a smooth trend is forecast from its last two periods, and the "
+        throw std::invalid_argument(std::string("a ") + to_string(spec.trend) +
+                                    " trend is forecast from its last two periods, and the "
                                     "sample has one");
     }
 }
@@ -155,8 +185,11 @@ ForecastDraws uc_constant_forecast(const VarSpec &spec, const TrainData &train,
         const arma::vec irregular_sd =
             spec.irregular ? arma::vec(arma::sqrt(one.irregular_var)) : arma::vec();
 
+        const arma::vec rho =
+            spec.trend == UcTrend::damped ? arma::vec(draws.rho.col(i)) : arma::vec();
+
         fcst.col(i) = uc_forecast_path(
-            spec, tau, cycle, one.phi, one.c, forecast.x, irregular_sd,
+            spec, tau, cycle, one.phi, one.c, forecast.x, irregular_sd, rho,
             [&](arma::uword) { return arma::vec(root * arma::randn<arma::vec>(shocks)); });
     }
 
@@ -166,7 +199,8 @@ ForecastDraws uc_constant_forecast(const VarSpec &spec, const TrainData &train,
 
 template <typename Draws>
 arma::mat uc_constant_log_likelihood(const VarSpec &spec, const TrainData &train,
-                                     const Draws &draws)
+                                     const Draws &draws, const arma::mat &signal_s = arma::mat(),
+                                     const arma::mat &signal_x = arma::mat())
 {
     if (spec.k <= 0)
     {
@@ -180,7 +214,8 @@ arma::mat uc_constant_log_likelihood(const VarSpec &spec, const TrainData &train
                                     "period, " + std::to_string(y.n_cols) + ", got " +
                                     std::to_string(train.x.n_rows));
     }
-    return uc_constant_filtered_log_density(spec, draws, y, train.x);
+    require_uc_signal_data(spec, signal_s, signal_x, y.n_cols);
+    return uc_constant_filtered_log_density(spec, draws, y, train.x, signal_s, signal_x);
 }
 
 /// The sample followed by the realised periods, and the deterministic terms
@@ -217,16 +252,20 @@ inline arma::uword uc_scored_sample(const VarSpec &spec, const TrainData &train,
 template <typename Draws>
 arma::mat uc_constant_predictive_log_density(const VarSpec &spec, const TrainData &train,
                                              const ForecastData &forecast, const TestData &test,
-                                             const Draws &draws, const char *algorithm)
+                                             const Draws &draws, const char *algorithm,
+                                             const arma::mat &signal_s = arma::mat(),
+                                             const arma::mat &signal_x = arma::mat())
 {
     require_scorable(spec, algorithm);
     arma::mat y, d;
     const arma::uword periods = uc_scored_sample(spec, train, forecast, test, y, d);
     require_uc_constant_draws(draws, spec, y.n_cols - periods);
+    require_uc_signal_data(spec, signal_s, signal_x, y.n_cols - periods);
 
     // The sample and then the scored periods, as one series the filter runs
-    // over: each scored period is predicted from everything before it.
-    const arma::mat all = uc_constant_filtered_log_density(spec, draws, y, d);
+    // over: each scored period is predicted from everything before it. The
+    // signals cover the sample only, so a scored period is the series alone.
+    const arma::mat all = uc_constant_filtered_log_density(spec, draws, y, d, signal_s, signal_x);
     return all.tail_cols(periods);
 }
 

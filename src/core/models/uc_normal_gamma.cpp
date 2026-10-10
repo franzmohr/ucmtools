@@ -100,7 +100,25 @@ UcNormalGammaDraws UcNormalGammaSampler::draw_coefficients(const UcNormalGammaIn
         out.cycle0 = arma::mat(k * p, iterations);
     }
 
+    // The damped trend's slope coefficients and the signal equations, each
+    // absent -- and consuming no random numbers -- unless the spec asks for it.
+    const bool damped = spec.trend == UcTrend::damped;
+    arma::vec rho = damped ? input.initial.rho : arma::vec();
+    core::UcSignalBlock signals(spec, input.train_signal, input.train_signal_x, input.signal_prior,
+                                input.initial.signal, input.signal_noise_prior,
+                                input.initial.signal_noise_inv);
+    if (damped)
+    {
+        out.rho = arma::mat(k, iterations);
+    }
+    if (signals.active())
+    {
+        out.signal = arma::mat(static_cast<arma::uword>(spec.n_uc_signal()), iterations);
+        out.signal_noise_inv = arma::mat(static_cast<arma::uword>(spec.n_signals), iterations);
+    }
+
     int unstationary_sweeps = 0;
+    int undamped_sweeps = 0;
     arma::mat shocks_path(shocks, tt);
 
     for (int draw = 0; draw < draws; draw++)
@@ -110,14 +128,36 @@ UcNormalGammaDraws UcNormalGammaSampler::draw_coefficients(const UcNormalGammaIn
 
         // Update the unobserved path: the trend, and the cycle with it where an
         // irregular component separates the two from the series.
+        core::UcExtension ext;
+        ext.rho = rho;
+        ext.signal = signals.terms();
         const core::UcPath path = core::draw_uc_path(spec, y, coef.phi(),
                                                      core::drift_path(coef.c(), d, k, tt),
                                                      coef.tau0(), q, irregular_inv, arma::mat(),
-                                                     presample.value());
+                                                     presample.value(), ext);
+
+        // Update the damped trend's rho given the path and the cycle shocks
+        if (damped)
+        {
+            const core::ShockRegression now = core::shock_regression_paths(
+                spec, path.trend, path.cycle, d, coef.positions(), presample.value(), rho);
+            arma::mat cycle_shocks(k, tt);
+            for (arma::uword t = 0; t < tt; t++)
+            {
+                cycle_shocks.col(t) =
+                    arma::vec(now.w.col(t) - now.x.slice(t) * coef.theta()).head(k);
+            }
+            if (!core::draw_damped_rho(spec, path.trend, cycle_shocks,
+                                       core::drift_path(coef.c(), d, k, tt), coef.tau0(), q,
+                                       arma::mat(), input.rho_prior, rho))
+            {
+                undamped_sweeps++;
+            }
+        }
 
         // Update the cycle coefficients, the drift and tau0, jointly given it
         core::ShockRegression reg = core::shock_regression_paths(
-            spec, path.trend, path.cycle, d, coef.positions(), presample.value());
+            spec, path.trend, path.cycle, d, coef.positions(), presample.value(), rho);
         const arma::vec theta_before = coef.theta();
         if (!coef.draw(reg, q, arma::mat()))
         {
@@ -132,7 +172,7 @@ UcNormalGammaDraws UcNormalGammaSampler::draw_coefficients(const UcNormalGammaIn
         if (presample.active())
         {
             const core::ShockRegression zero = core::shock_regression_paths(
-                spec, path.trend, path.cycle, d, coef.positions());
+                spec, path.trend, path.cycle, d, coef.positions(), arma::vec(), rho);
             arma::mat shocks_zero(shocks, std::min<arma::uword>(p, tt));
             for (arma::uword t = 0; t < shocks_zero.n_cols; t++)
             {
@@ -140,7 +180,7 @@ UcNormalGammaDraws UcNormalGammaSampler::draw_coefficients(const UcNormalGammaIn
             }
             presample.draw(coef.phi(), shocks_zero, q);
             reg = core::shock_regression_paths(spec, path.trend, path.cycle, d, coef.positions(),
-                                               presample.value());
+                                               presample.value(), rho);
         }
 
         for (arma::uword t = 0; t < tt; t++)
@@ -190,6 +230,9 @@ UcNormalGammaDraws UcNormalGammaSampler::draw_coefficients(const UcNormalGammaIn
             irregular_inv = core::draw_irregular_precision(input.irregular_prior, y, path);
         }
 
+        // Update the signal equations given the cycle
+        signals.draw(path.cycle);
+
         // Store draws
         if (spec.keeps(draw))
         {
@@ -219,6 +262,15 @@ UcNormalGammaDraws UcNormalGammaSampler::draw_coefficients(const UcNormalGammaIn
                 out.cycle.col(pos) = arma::vectorise(path.cycle);
                 out.irregular_inv.col(pos) = irregular_inv;
             }
+            if (damped)
+            {
+                out.rho.col(pos) = rho;
+            }
+            if (signals.active())
+            {
+                out.signal.col(pos) = signals.coefficients();
+                out.signal_noise_inv.col(pos) = signals.precision();
+            }
         }
     }
 
@@ -231,6 +283,7 @@ UcNormalGammaDraws UcNormalGammaSampler::draw_coefficients(const UcNormalGammaIn
                          " tries and kept the one before: the posterior may put much of its mass "
                          "on explosive cycle coefficients");
     }
+    core::report_undamped_sweeps(reporter, undamped_sweeps, draws);
     return out;
 }
 
@@ -244,14 +297,16 @@ ForecastDraws UcNormalGammaSampler::forecast(const UcNormalGammaInput &input,
 arma::mat UcNormalGammaSampler::log_likelihood(const UcNormalGammaInput &input,
                                                const UcNormalGammaDraws &draws) const
 {
-    return core::uc_constant_log_likelihood(input.spec, input.train, draws);
+    return core::uc_constant_log_likelihood(input.spec, input.train, draws, input.train_signal,
+                                            input.train_signal_x);
 }
 
 arma::mat UcNormalGammaSampler::predictive_log_density(const UcNormalGammaInput &input,
                                                        const UcNormalGammaDraws &draws) const
 {
     return core::uc_constant_predictive_log_density(input.spec, input.train, input.forecast,
-                                                    input.test, draws, "UcNormalGamma");
+                                                    input.test, draws, "UcNormalGamma",
+                                                    input.train_signal, input.train_signal_x);
 }
 
 } // namespace bayests
