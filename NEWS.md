@@ -1,5 +1,22 @@
 # ucmtools 0.0.0.9000
 
+* **`create_ucmodel(cycle_init = "stationary")` starts the cycle from its
+  stationary distribution rather than from zero.** With the default, `"zero"`,
+  the cycle is zero before the sample, as in Grant and Chan (2017), which pins
+  the first estimates of the cycle near zero whatever the data say. The new
+  value draws the `p` values before the sample from the cycle's stationary
+  distribution under each draw's coefficients and shock covariance, returns
+  them as `posterior$cycle0`, and integrates them out of the log likelihood. It
+  is available for `error = "gamma"`, `"gamma+covar"` and `"wishart"`, and
+  needs a stationary cycle with lags. The vendored BayesTS core moves to
+  `4808dff`, which adds it; draws of a model without it are unchanged.
+
+* `stationary` now defaults to `TRUE` for every error specification with a
+  cycle with lags, and is accepted by all of them: the four samplers all draw a
+  stationary cycle when asked to. Before it was limited to the gamma errors.
+  Draws of the Wishart, stochastic volatility and skewed models change, since
+  their cycle is now drawn stationary by default.
+
 * **First version: the four unobserved components models of BayesTS in R.**
   `create_ucmodel()` sets up a trend-cycle decomposition of one or more series
   -- a random walk or smooth trend with a drift and breaks in it, a stationary

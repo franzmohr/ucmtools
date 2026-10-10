@@ -31,7 +31,6 @@ test_that("what cannot be estimated is refused where it is specified", {
   expect_error(create_ucmodel(as.numeric(y)), "time-series")
   expect_error(create_ucmodel(y, error = "normal"), "error")
   expect_error(create_ucmodel(y, p = 0, irregular = TRUE), "irregular")
-  expect_error(create_ucmodel(y, error = "sv", stationary = TRUE), "stationary")
   expect_error(create_ucmodel(y, drift = FALSE, breaks = list(2008)), "drift")
   expect_error(create_ucmodel(y, breaks = list(1950)), "break")
   expect_error(create_ucmodel(y, skew_x = y), "skew")
@@ -175,11 +174,31 @@ test_that("a failed simulation is reported on the object", {
   expect_null(fit$posterior)
 })
 
-test_that("the cycle is drawn stationary by default where the sampler can", {
+test_that("the cycle is drawn stationary by default when it has lags", {
   y <- uc_data()[, "y"]
-  expect_true(create_ucmodel(y)$model$stationary)
-  expect_true(create_ucmodel(y, error = "gamma+covar")$model$stationary)
+  for (error in c("gamma", "gamma+covar", "wishart", "sv", "skew")) {
+    expect_true(create_ucmodel(y, error = error)$model$stationary, info = error)
+  }
   expect_null(create_ucmodel(y, stationary = FALSE)$model$stationary)
-  expect_null(create_ucmodel(y, error = "sv")$model$stationary)
   expect_null(create_ucmodel(y, p = 0)$model$stationary)
+  expect_error(create_ucmodel(y, p = 0, stationary = TRUE), "lags")
+})
+
+test_that("the cycle can start from its stationary distribution", {
+  for (error in c("gamma", "gamma+covar", "wishart")) {
+    fit <- uc_fit(p = 2, error = error, cycle_init = "stationary")
+    expect_null(fit$error, label = error)
+    expect_identical(fit$model$cycle_init, "stationary")
+    expect_identical(colnames(fit$posterior$cycle0$coeffs), c("y.c0", "y.c-1"))
+    expect_gt(stats::sd(as.numeric(fit$posterior$cycle0$coeffs[, 1])), 0)
+  }
+  fit <- add_posterior_loglik(uc_fit(p = 2, cycle_init = "stationary", irregular = TRUE))
+  expect_true(all(is.finite(as.matrix(fit$posterior$loglik))))
+  expect_null(uc_fit(p = 2)$posterior$cycle0)
+
+  y <- uc_data()[, "y"]
+  expect_error(create_ucmodel(y, error = "sv", cycle_init = "stationary"), "one shock covariance")
+  expect_error(create_ucmodel(y, error = "skew", cycle_init = "stationary"), "one shock covariance")
+  expect_error(create_ucmodel(y, stationary = FALSE, cycle_init = "stationary"), "stationary = TRUE")
+  expect_error(create_ucmodel(y, cycle_init = "random"), "cycle_init")
 })

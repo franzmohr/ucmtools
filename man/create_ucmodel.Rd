@@ -14,6 +14,7 @@ create_ucmodel(
   irregular = FALSE,
   error = "gamma",
   stationary = NULL,
+  cycle_init = "zero",
   skew = "snd",
   skew_shock = "cycle",
   skew_x = NULL,
@@ -58,11 +59,19 @@ Wishart prior on its inverse, \code{"sv"} and \code{"sv+covar"} for
 stochastic volatility, and \code{"skew"} for skewed shocks.}
 
 \item{stationary}{logical. Should every draw of the cycle coefficients
-describe a stationary cycle, as in Grant and Chan (2017)? Available for
-\code{error = "gamma"} and \code{"gamma+covar"}, where it is the default;
-the other samplers do not restrict the cycle. Without the restriction a share
-of the draws can put the cycle at or past a unit root, where it absorbs
-persistent movements of the trend and its credible band widens accordingly.}
+describe a stationary cycle, as in Grant and Chan (2017)? The default for a
+cycle with lags. Without the restriction a share of the draws can put the
+cycle at or past a unit root, where it absorbs persistent movements of the
+trend and its credible band widens accordingly.}
+
+\item{cycle_init}{where the cycle starts: \code{"zero"}, the cycle is zero
+before the sample, as in Grant and Chan (2017), or \code{"stationary"}, the
+\code{p} values before the sample are drawn from the cycle's stationary
+distribution. Zero pins the first estimates of the cycle near zero whatever
+the data say. \code{"stationary"} needs a stationary cycle with lags and is
+available for \code{error = "gamma"}, \code{"gamma+covar"} and
+\code{"wishart"}; the draws of the values before the sample are
+\code{posterior$cycle0}.}
 
 \item{skew, skew_shock, skew_x}{for \code{error = "skew"}: the distribution of
 the skewed shock, \code{"snd"} for the skew normal or \code{"ald"} for the

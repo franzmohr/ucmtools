@@ -45,6 +45,7 @@ bayests::UcNormalGammaDraws read_draws(const Rcpp::List &object) {
     read_block_draws(posterior, "psi", draws.psi);
     read_block_draws(posterior, "u_omega_inv", draws.u_omega_inv);
     read_block_draws(posterior, "u_sigma_inv", draws.u_sigma_inv);
+    read_block_draws(posterior, "cycle0", draws.cycle0);
   }
   return draws;
 }
@@ -54,6 +55,8 @@ Rcpp::List write_draws(const bayests::UcNormalGammaDraws &draws) {
   posterior = with_block_draws(posterior, "psi", draws.psi);
   posterior = with_block_draws(posterior, "u_omega_inv", draws.u_omega_inv);
   posterior = with_block_draws(posterior, "u_sigma_inv", draws.u_sigma_inv);
+  // The cycle before the sample, under cycle_init = "stationary" only.
+  posterior = with_block_draws(posterior, "cycle0", draws.cycle0);
   return posterior;
 }
 
