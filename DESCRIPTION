@@ -2,7 +2,7 @@ Package: ucmtools
 Title: Bayesian Inference of Unobserved Components Models
 Version: 0.0.0.9000
 Authors@R: person(c("Franz", "X."), "Mohr", email = "franz.x.mohr@outlook.com", role = c("aut","cre","cph"), comment = c(ORCID = "0009-0003-8890-7781"))
-Description: Bayesian trend-cycle decompositions of one or more time series by unobserved components models: a random walk or smooth trend with an optional drift and breaks in it, a stationary autoregressive cycle, an optional irregular component, and shocks that are independent, correlated, stochastically volatile or skewed. The posterior is simulated by the Gibbs samplers of the 'BayesTS' library, after Grant and Chan (2017) and Huang, Luo and Wang (2026). Forecasts, the integrated log likelihood and model comparison work through the shared layer of package 'bayests'.
+Description: Bayesian trend-cycle decompositions of one or more time series by unobserved components models: a random walk, smooth or damped trend with an optional drift and breaks in it, a stationary autoregressive cycle, an optional irregular component, signal equations that load further observed series on the cycle, as in the European Commission's output gap models, and shocks that are independent, correlated, stochastically volatile or skewed. The posterior is simulated by the Gibbs samplers of the 'BayesTS' library, after Grant and Chan (2017) and Huang, Luo and Wang (2026). Forecasts, the integrated log likelihood and model comparison work through the shared layer of package 'bayests'.
 License: GPL (>= 2)
 Depends:
     R (>= 4.0.0),

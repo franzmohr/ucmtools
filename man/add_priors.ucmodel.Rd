@@ -13,6 +13,9 @@
   psi = list(),
   irregular = list(),
   skew = list(),
+  rho = list(),
+  signal = list(),
+  signal_noise = list(),
   ...
 )
 }
@@ -53,6 +56,18 @@ skewed, one per series.}
 of the log scales of the skewed shock, as \code{a}. Per series, a constant
 and one slope per index variable for each of the two scales.}
 
+\item{rho}{for \code{trend = "damped"}, the normal prior on the slope's
+autoregressive coefficient of each series, as \code{a}, truncated to
+\eqn{(-1, 1)}.}
+
+\item{signal}{for signal equations, the normal prior on their coefficients,
+as \code{a}: vec\eqn{(B, \Lambda_0, \dots, \Lambda_q)}, column by column, so
+for each regressor -- the constant, \code{signal_x}, then each series' cycle
+at lag 0 to \code{signal_lags} -- its coefficient in every signal.}
+
+\item{signal_noise}{for signal equations, the gamma \code{shape} and
+\code{rate} on the precision of each signal's noise.}
+
 \item{...}{not used.}
 }
 \value{
@@ -80,7 +95,12 @@ data, the variance \eqn{s_i^2} of the first differences of series \eqn{i}:
   \eqn{\log s_i^2} with precision 0.1, and an offset of \eqn{10^{-6}};
   \item \code{psi}: mean zero, precision one;
   \item \code{skew}: the constants centred on \eqn{\log s_i / 2}, the slopes
-  on zero, precision one.
+  on zero, precision one;
+  \item \code{rho}: mean zero, precision one;
+  \item \code{signal}: the constant of signal \eqn{j} centred on its sample
+  mean, every other coefficient on zero, precision 0.01;
+  \item \code{signal_noise}: shape 3 and rate \eqn{3 v_j}, where \eqn{v_j}
+  is the sample variance of signal \eqn{j}.
 }
 These are not the priors of Grant and Chan (2017), which are set for 100 times
 log US GDP; give \code{a}, \code{u_sigma} and \code{tau0} to reproduce them.

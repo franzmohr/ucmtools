@@ -12,6 +12,10 @@
 #' sample at the prior mean, no correlation between the shocks, and shock
 #' precisions of \eqn{1 / s_i^2}, the variance of the first differences of
 #' series \eqn{i}. The trend path is not among them: every draw starts from it.
+#' A damped trend starts its \eqn{\rho} at the prior mean, held inside
+#' \eqn{(-0.95, 0.95)}, and its drift where that gives the mean growth; the
+#' signal equations start at their prior mean, with noise precisions of one
+#' over each signal's sample variance.
 #'
 #' The seed is drawn from R's random number generator, so \code{set.seed()}
 #' before this call makes it reproducible; \code{\link[bayests]{add_seed}}
@@ -43,7 +47,12 @@ add_initial_values.ucmodel <- function(object, ...) {
     # mean growth, the breaks at zero.
     c0 <- matrix(0, d$k, n_det)
     growth <- colMeans(diff(as.matrix(y)))
-    if (d$order == 2) growth <- 0 * growth
+    if (identical(model[["trend"]], "smooth")) growth <- 0 * growth
+    if (identical(model[["trend"]], "damped")) {
+      # The slope's mean is C d_t / (1 - rho).
+      rho0 <- .uc_initial_rho(priors, d$k)
+      growth <- growth * (1 - rho0)
+    }
     c0[, colnames(det) == "const"] <- growth
     initial[["c"]] <- matrix(as.vector(c0))
   }
@@ -73,10 +82,23 @@ add_initial_values.ucmodel <- function(object, ...) {
   if (isTRUE(model[["irregular"]])) {
     initial[["irregular_inv"]] <- matrix(1 / s2)
   }
+  if (identical(model[["trend"]], "damped")) {
+    initial[["rho"]] <- matrix(.uc_initial_rho(priors, d$k))
+  }
+  if (d$n_signals > 0) {
+    initial[["signal"]] <- priors[["signal"]][["mu"]]
+    initial[["signal_noise_inv"]] <- matrix(1 / .uc_level_scale(object[["data"]][["signal"]]))
+  }
 
   object[["initial"]] <- initial
   if (is.null(object[["model"]][["seed"]])) {
     object[["model"]][["seed"]] <- bayests::.draw_model_seed()
   }
   object
+}
+
+# Where a damped trend's rho starts: the prior mean, kept off the unit circle,
+# where the core refuses it and the slope would no longer have a mean.
+.uc_initial_rho <- function(priors, k) {
+  pmin(pmax(rep_len(as.numeric(priors[["rho"]][["mu"]]), k), -0.95), 0.95)
 }

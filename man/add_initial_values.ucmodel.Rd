@@ -25,6 +25,10 @@ mean growth of each series and its breaks at zero, the trend before the
 sample at the prior mean, no correlation between the shocks, and shock
 precisions of \eqn{1 / s_i^2}, the variance of the first differences of
 series \eqn{i}. The trend path is not among them: every draw starts from it.
+A damped trend starts its \eqn{\rho} at the prior mean, held inside
+\eqn{(-0.95, 0.95)}, and its drift where that gives the mean growth; the
+signal equations start at their prior mean, with noise precisions of one
+over each signal's sample variance.
 
 The seed is drawn from R's random number generator, so \code{set.seed()}
 before this call makes it reproducible; \code{\link[bayests]{add_seed}}

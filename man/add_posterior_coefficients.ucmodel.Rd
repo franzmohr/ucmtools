@@ -59,6 +59,11 @@ object per block under \code{coeffs}, one row per draw:
   \item{\code{skew}, \code{skew_latent}}{the coefficients of the log scales of
   the skewed shock and its latent variates;}
   \item{\code{cycle0}}{under \code{cycle_init = "stationary"}, the cycle
-  before the sample, \eqn{(c_0', \dots, c_{1-p}')'}.}
+  before the sample, \eqn{(c_0', \dots, c_{1-p}')'};}
+  \item{\code{rho}}{under \code{trend = "damped"}, the slope's
+  autoregressive coefficient of each series;}
+  \item{\code{signal}, \code{signal_noise_inv}}{with signals, the
+  coefficients of their equations, vec\eqn{(B, \Lambda_0, \dots, \Lambda_q)},
+  named \code{<signal>.<regressor>}, and the precisions of their noise.}
 }
 }

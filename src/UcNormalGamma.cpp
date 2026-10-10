@@ -20,6 +20,7 @@ bayests::UcNormalGammaInput read_input(const Rcpp::List &object) {
 
   bayests::UcNormalGammaInput input;
   read_uc_common(object, input);
+  read_uc_extension(object, input);
 
   if (input.use_psi()) {
     read_uc_normal_block(object, "psi", input.psi_prior, input.initial.psi);
@@ -40,6 +41,7 @@ bayests::UcNormalGammaInput read_input(const Rcpp::List &object) {
 bayests::UcNormalGammaDraws read_draws(const Rcpp::List &object) {
   bayests::UcNormalGammaDraws draws;
   read_uc_common_draws(object, draws);
+  read_uc_extension_draws(object, draws);
   if (has(object, "posterior")) {
     const Rcpp::List posterior = object["posterior"];
     read_block_draws(posterior, "psi", draws.psi);
@@ -57,6 +59,8 @@ Rcpp::List write_draws(const bayests::UcNormalGammaDraws &draws) {
   posterior = with_block_draws(posterior, "u_sigma_inv", draws.u_sigma_inv);
   // The cycle before the sample, under cycle_init = "stationary" only.
   posterior = with_block_draws(posterior, "cycle0", draws.cycle0);
+  // The damped trend's rho and the signal equations, where the model has them.
+  posterior = with_uc_extension_draws(posterior, draws);
   return posterior;
 }
 

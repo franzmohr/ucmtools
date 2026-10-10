@@ -16,8 +16,9 @@
 #' file does, so the two hold the same elements under the same names. The
 #' series are \code{/data/train/y}, the drift's terms \code{/data/train/x} and
 #' over the horizon \code{/data/forecast/x}, the skew index
-#' \code{/data/train/skew_x} and \code{/data/forecast/skew_x}, and the realised
-#' values \code{/data/test/y}.
+#' \code{/data/train/skew_x} and \code{/data/forecast/skew_x}, the signals and
+#' their regressors \code{/data/train/signal} and \code{/data/train/signal_x},
+#' and the realised values \code{/data/test/y}.
 #'
 #' @return \code{write_to_hdf5} returns \code{filename} invisibly;
 #' \code{from_bayests_tree} the model.
@@ -34,7 +35,8 @@ from_bayests_tree.ucmodel <- function(tree, ...) {
 }
 
 # The specification elements BayesTS reads as integers.
-.uc_spec_counts <- c("k", "p", "n", "iterations", "burnin", "thin", "h", "seed")
+.uc_spec_counts <- c("k", "p", "n", "iterations", "burnin", "thin", "h", "seed",
+                     "n_signals", "signal_lags", "n_signal_x")
 
 .uc_model_tree <- function(object) {
   model <- object[["model"]]
@@ -63,7 +65,8 @@ from_bayests_tree.ucmodel <- function(tree, ...) {
 
   data <- object[["data"]]
   tree_data <- list(
-    train = list(y = data[["y"]], x = det, skew_x = data[["skew_x"]]),
+    train = list(y = data[["y"]], x = det, skew_x = data[["skew_x"]],
+                 signal = data[["signal"]], signal_x = data[["signal_x"]]),
     forecast = data[["forecast"]],
     test = data[["test"]])
 
@@ -102,6 +105,8 @@ from_bayests_tree.ucmodel <- function(tree, ...) {
     }
   }
   data[["skew_x"]] <- train[["skew_x"]]
+  data[["signal"]] <- train[["signal"]]
+  data[["signal_x"]] <- train[["signal_x"]]
   data[["forecast"]] <- tree[["data"]][["forecast"]]
   data[["test"]] <- tree[["data"]][["test"]]
 

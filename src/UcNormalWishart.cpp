@@ -20,6 +20,7 @@ bayests::UcNormalWishartInput read_input(const Rcpp::List &object) {
 
   bayests::UcNormalWishartInput input;
   read_uc_common(object, input);
+  read_uc_extension(object, input);
 
   if (has(object, "priors")) {
     const Rcpp::List priors = object["priors"];
@@ -39,6 +40,7 @@ bayests::UcNormalWishartInput read_input(const Rcpp::List &object) {
 bayests::UcNormalWishartDraws read_draws(const Rcpp::List &object) {
   bayests::UcNormalWishartDraws draws;
   read_uc_common_draws(object, draws);
+  read_uc_extension_draws(object, draws);
   if (has(object, "posterior")) {
     const Rcpp::List posterior = object["posterior"];
     read_block_draws(posterior, "u_sigma_inv", draws.u_sigma_inv);
@@ -52,6 +54,8 @@ Rcpp::List write_draws(const bayests::UcNormalWishartDraws &draws) {
   posterior = with_block_draws(posterior, "u_sigma_inv", draws.u_sigma_inv);
   // The cycle before the sample, under cycle_init = "stationary" only.
   posterior = with_block_draws(posterior, "cycle0", draws.cycle0);
+  // The damped trend's rho and the signal equations, where the model has them.
+  posterior = with_uc_extension_draws(posterior, draws);
   return posterior;
 }
 

@@ -130,6 +130,66 @@ void read_uc_common(const Rcpp::List &object, Input &input)
   }
 }
 
+/// What UcNormalGamma and UcNormalWishart add to the family, each only where the
+/// specification asks for it: the damped trend's `rho`, and the signal
+/// equations -- `model$n_signals`, `signal_lags` and `n_signal_x`, the data
+/// `data$signal` and `data$signal_x`, one row per period as `data$y`, the
+/// priors `signal` and `signal_noise`, and the starts `signal` and
+/// `signal_noise_inv`. The other two models have no such members.
+template <typename Input>
+void read_uc_extension(const Rcpp::List &object, Input &input)
+{
+  const Rcpp::List model = object["model"];
+  input.spec.n_signals = optional_int(model, "n_signals", 0);
+  input.spec.signal_lags = optional_int(model, "signal_lags", 0);
+  input.spec.n_signal_x = optional_int(model, "n_signal_x", 0);
+
+  if (input.spec.trend == bayests::UcTrend::damped) {
+    read_uc_normal_block(object, "rho", input.rho_prior, input.initial.rho);
+  }
+  if (input.spec.n_signals <= 0) {
+    return;
+  }
+  if (has(object, "data")) {
+    const Rcpp::List data = object["data"];
+    read_mat_if_present(data, "signal", input.train_signal);
+    read_mat_if_present(data, "signal_x", input.train_signal_x);
+  }
+  read_uc_normal_block(object, "signal", input.signal_prior, input.initial.signal);
+  if (has(object, "priors")) {
+    const Rcpp::List priors = object["priors"];
+    if (has(priors, "signal_noise")) {
+      input.signal_noise_prior = read_gamma_prior(Rcpp::List(priors["signal_noise"]));
+    }
+  }
+  if (has(object, "initial")) {
+    const Rcpp::List initial = object["initial"];
+    read_vec_if_present(initial, "signal_noise_inv", input.initial.signal_noise_inv);
+  }
+}
+
+/// The draws read_uc_extension()'s blocks produce, read back and written.
+template <typename Draws>
+void read_uc_extension_draws(const Rcpp::List &object, Draws &draws)
+{
+  if (!has(object, "posterior")) {
+    return;
+  }
+  const Rcpp::List posterior = object["posterior"];
+  read_block_draws(posterior, "rho", draws.rho);
+  read_block_draws(posterior, "signal", draws.signal);
+  read_block_draws(posterior, "signal_noise_inv", draws.signal_noise_inv);
+}
+
+template <typename Draws>
+Rcpp::List with_uc_extension_draws(Rcpp::List posterior, const Draws &draws)
+{
+  posterior = with_block_draws(posterior, "rho", draws.rho);
+  posterior = with_block_draws(posterior, "signal", draws.signal);
+  posterior = with_block_draws(posterior, "signal_noise_inv", draws.signal_noise_inv);
+  return posterior;
+}
+
 /// The shared blocks of the posterior, as the core keeps draws.
 template <typename Draws>
 void read_uc_common_draws(const Rcpp::List &object, Draws &draws)
