@@ -30,11 +30,18 @@
 #' Wishart prior on its inverse, \code{"sv"} and \code{"sv+covar"} for
 #' stochastic volatility, and \code{"skew"} for skewed shocks.
 #' @param stationary logical. Should every draw of the cycle coefficients
-#' describe a stationary cycle, as in Grant and Chan (2017)? Available for
-#' \code{error = "gamma"} and \code{"gamma+covar"}, where it is the default;
-#' the other samplers do not restrict the cycle. Without the restriction a share
-#' of the draws can put the cycle at or past a unit root, where it absorbs
-#' persistent movements of the trend and its credible band widens accordingly.
+#' describe a stationary cycle, as in Grant and Chan (2017)? The default for a
+#' cycle with lags. Without the restriction a share of the draws can put the
+#' cycle at or past a unit root, where it absorbs persistent movements of the
+#' trend and its credible band widens accordingly.
+#' @param cycle_init where the cycle starts: \code{"zero"}, the cycle is zero
+#' before the sample, as in Grant and Chan (2017), or \code{"stationary"}, the
+#' \code{p} values before the sample are drawn from the cycle's stationary
+#' distribution. Zero pins the first estimates of the cycle near zero whatever
+#' the data say. \code{"stationary"} needs a stationary cycle with lags and is
+#' available for \code{error = "gamma"}, \code{"gamma+covar"} and
+#' \code{"wishart"}; the draws of the values before the sample are
+#' \code{posterior$cycle0}.
 #' @param skew,skew_shock,skew_x for \code{error = "skew"}: the distribution of
 #' the skewed shock, \code{"snd"} for the skew normal or \code{"ald"} for the
 #' asymmetric Laplace; which shock is skewed, \code{"cycle"} or \code{"trend"};
@@ -95,7 +102,8 @@
 #' @export
 create_ucmodel <- function(y, p = 2, trend = "rw", cycle = "var", drift = NULL,
                            breaks = NULL, irregular = FALSE, error = "gamma",
-                           stationary = NULL, skew = "snd", skew_shock = "cycle",
+                           stationary = NULL, cycle_init = "zero", skew = "snd",
+                           skew_shock = "cycle",
                            skew_x = NULL, iterations = 10000, burnin = 2000, thin = 1) {
 
   if (!stats::is.ts(y)) {
@@ -109,9 +117,10 @@ create_ucmodel <- function(y, p = 2, trend = "rw", cycle = "var", drift = NULL,
   .check_choice(skew_shock, "skew_shock", c("cycle", "trend"))
   .check_flag(irregular, "irregular")
   if (is.null(stationary)) {
-    stationary <- error %in% c("gamma", "gamma+covar") && all(p > 0)
+    stationary <- all(p > 0)
   }
   .check_flag(stationary, "stationary")
+  .check_choice(cycle_init, "cycle_init", c("zero", "stationary"))
   .check_whole_number(iterations, "iterations", 1)
   .check_whole_number(burnin, "burnin", 0)
   if (is.null(drift)) {
@@ -123,9 +132,19 @@ create_ucmodel <- function(y, p = 2, trend = "rw", cycle = "var", drift = NULL,
     stop("An irregular component needs a cycle with lags: at p = 0 the cycle is ",
          "white noise as well, and the two cannot be told apart.", call. = FALSE)
   }
-  if (stationary && !error %in% c("gamma", "gamma+covar")) {
-    stop("Argument 'stationary' is available for error = \"gamma\" and ",
-         "\"gamma+covar\" only.", call. = FALSE)
+  if (stationary && any(p == 0)) {
+    stop("Argument 'stationary' needs a cycle with lags, p > 0.", call. = FALSE)
+  }
+  if (cycle_init == "stationary") {
+    if (!error %in% c("gamma", "gamma+covar", "wishart")) {
+      stop("Argument cycle_init = \"stationary\" is available for error = \"gamma\", ",
+           "\"gamma+covar\" and \"wishart\": the stationary distribution is taken under ",
+           "one shock covariance per draw.", call. = FALSE)
+    }
+    if (!stationary || any(p == 0)) {
+      stop("Argument cycle_init = \"stationary\" needs a stationary cycle with lags: ",
+           "stationary = TRUE and p > 0.", call. = FALSE)
+    }
   }
   if (!is.null(breaks) && !drift) {
     stop("Argument 'breaks' needs a drift to break; set drift = TRUE.", call. = FALSE)
@@ -158,6 +177,9 @@ create_ucmodel <- function(y, p = 2, trend = "rw", cycle = "var", drift = NULL,
   model[["thin"]] <- .check_sampler_thin(thin)
   if (stationary) {
     model[["stationary"]] <- TRUE
+  }
+  if (cycle_init == "stationary") {
+    model[["cycle_init"]] <- "stationary"
   }
   if (error == "skew") {
     model[["skew"]] <- skew

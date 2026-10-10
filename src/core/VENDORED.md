@@ -6,8 +6,16 @@
 project is here -- the core links neither HDF5 nor HighFive, prints nothing and
 reads no files, which is what makes it embeddable in an R package.
 
-The copy is **BayesTS `75d35c6`**, upstream `main` after the merge of the
-unobserved components models (`7cdd0ac`, UcNormalGamma; `14130e1`,
+The copy is **BayesTS `4808dff`**, the tip of upstream's `uc-cycle-init`
+branch off `main` at `22b3488`: `/model/cycle_init = "stationary"`, the cycle
+before the sample drawn from its stationary distribution in UcNormalGamma and
+UcNormalWishart (`spec.h`, `results.h`, `spec.cpp`, `inputs.cpp`,
+`uc_support.h`, `uc_constant_support.h` and the two models' sources). Draws of
+a file without the attribute are unchanged; upstream compared the fingerprints
+of all 194 fixtures, none moved.
+
+Before that the copy was **BayesTS `75d35c6`**, upstream `main` after the merge
+of the unobserved components models (`7cdd0ac`, UcNormalGamma; `14130e1`,
 UcNormalWishart, UcNormalStochvol, UcNormalSkew and the irregular component).
 
 ## What is copied

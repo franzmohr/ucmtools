@@ -57,10 +57,18 @@ arma::mat uc_constant_filtered_log_density(const VarSpec &spec, const Draws &dra
         const UcDrawParts one = uc_draw_parts(spec, draws.a, draws.c, draws.tau0,
                                               draws.irregular_inv, i);
         const arma::mat q = arma::reshape(draws.u_sigma_inv.col(i), shocks, shocks);
-        const UcStateSpace ss = state_space(spec, one.phi, uc_covariance_of_precision(q));
+        const arma::mat sigma = uc_covariance_of_precision(q);
+        const UcStateSpace ss = state_space(spec, one.phi, sigma);
         UcFilterTerms terms;
         terms.irregular_var = one.irregular_var;
-        out.row(i) = filter_log_density(ss, y, drift_path(one.c, d, k, y.n_cols), one.tau0, terms);
+        // Under UcCycleInit::stationary the cycle before the sample is
+        // integrated out from its stationary distribution, as the trend path is.
+        const arma::mat initial_cycle_cov =
+            spec.cycle_init == UcCycleInit::stationary
+                ? cycle_stationary_covariance(one.phi, sigma.submat(0, 0, k - 1, k - 1))
+                : arma::mat();
+        out.row(i) = filter_log_density(ss, y, drift_path(one.c, d, k, y.n_cols), one.tau0, terms,
+                                        initial_cycle_cov);
     }
     return out;
 }

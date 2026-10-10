@@ -74,6 +74,10 @@ void read_uc_common(const Rcpp::List &object, Input &input)
   if (has(model, "cycle")) {
     input.spec.cycle = bayests::uc_cycle_from_string(Rcpp::as<std::string>(model["cycle"]));
   }
+  if (has(model, "cycle_init")) {
+    input.spec.cycle_init =
+      bayests::uc_cycle_init_from_string(Rcpp::as<std::string>(model["cycle_init"]));
+  }
   if (has(model, "irregular")) {
     input.spec.irregular = Rcpp::as<bool>(model["irregular"]);
   }

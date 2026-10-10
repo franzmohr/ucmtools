@@ -8,6 +8,7 @@
 #include "core/models/uc_constant_support.h"
 #include "core/models/uc_support.h"
 
+#include <algorithm>
 #include <string>
 
 namespace bayests
@@ -55,6 +56,13 @@ UcNormalWishartDraws UcNormalWishartSampler::draw_coefficients(const UcNormalWis
         out.irregular_inv = arma::mat(k, iterations);
     }
 
+    // The cycle before the sample; see UcNormalGammaSampler.
+    core::UcCyclePresample presample(spec, coef.phi(), q);
+    if (presample.active())
+    {
+        out.cycle0 = arma::mat(k * p, iterations);
+    }
+
     int unstationary_sweeps = 0;
     arma::mat shocks_path(shocks, tt);
 
@@ -66,14 +74,35 @@ UcNormalWishartDraws UcNormalWishartSampler::draw_coefficients(const UcNormalWis
         // Update the unobserved path
         const core::UcPath path = core::draw_uc_path(spec, y, coef.phi(),
                                                      core::drift_path(coef.c(), d, k, tt),
-                                                     coef.tau0(), q, irregular_inv);
+                                                     coef.tau0(), q, irregular_inv, arma::mat(),
+                                                     presample.value());
 
         // Update the cycle coefficients, the drift and tau0, jointly given it
-        const core::ShockRegression reg =
-            core::shock_regression_paths(spec, path.trend, path.cycle, d, coef.positions());
+        core::ShockRegression reg = core::shock_regression_paths(
+            spec, path.trend, path.cycle, d, coef.positions(), presample.value());
+        const arma::vec theta_before = coef.theta();
         if (!coef.draw(reg, q, arma::mat()))
         {
             unstationary_sweeps++;
+        }
+        else if (!presample.accept(coef.phi(), q))
+        {
+            coef.set_theta(theta_before);
+        }
+
+        // Update the cycle before the sample, given its first p periods
+        if (presample.active())
+        {
+            const core::ShockRegression zero = core::shock_regression_paths(
+                spec, path.trend, path.cycle, d, coef.positions());
+            arma::mat shocks_zero(shocks, std::min<arma::uword>(p, tt));
+            for (arma::uword t = 0; t < shocks_zero.n_cols; t++)
+            {
+                shocks_zero.col(t) = zero.w.col(t) - zero.x.slice(t) * coef.theta();
+            }
+            presample.draw(coef.phi(), shocks_zero, q);
+            reg = core::shock_regression_paths(spec, path.trend, path.cycle, d, coef.positions(),
+                                               presample.value());
         }
         for (arma::uword t = 0; t < tt; t++)
         {
@@ -81,7 +110,11 @@ UcNormalWishartDraws UcNormalWishartSampler::draw_coefficients(const UcNormalWis
         }
 
         // Update the shock precision
-        q = wishart(shocks_path, input.u_sigma_prior.scale, post_df);
+        const arma::mat q_new = wishart(shocks_path, input.u_sigma_prior.scale, post_df);
+        if (presample.accept(coef.phi(), q_new))
+        {
+            q = q_new;
+        }
 
         // Update the irregular component's precisions
         if (use_irregular)
@@ -103,6 +136,10 @@ UcNormalWishartDraws UcNormalWishartSampler::draw_coefficients(const UcNormalWis
             }
             out.tau0.col(pos) = coef.tau0();
             out.u_sigma_inv.col(pos) = arma::vectorise(q);
+            if (presample.active())
+            {
+                out.cycle0.col(pos) = presample.value();
+            }
             if (use_irregular)
             {
                 out.cycle.col(pos) = arma::vectorise(path.cycle);

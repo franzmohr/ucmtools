@@ -57,6 +57,8 @@ object per block under \code{coeffs}, one row per draw:
   innovations;}
   \item{\code{irregular_inv}}{the precisions of the irregular component;}
   \item{\code{skew}, \code{skew_latent}}{the coefficients of the log scales of
-  the skewed shock and its latent variates.}
+  the skewed shock and its latent variates;}
+  \item{\code{cycle0}}{under \code{cycle_init = "stationary"}, the cycle
+  before the sample, \eqn{(c_0', \dots, c_{1-p}')'}.}
 }
 }

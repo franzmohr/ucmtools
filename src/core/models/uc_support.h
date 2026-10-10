@@ -147,6 +147,25 @@ inline arma::vec trend_offset(const arma::vec &drift_t, const arma::vec &tau0, c
     return rt;
 }
 
+/// sum_{j > t} Phi_j c_{t-j}: the part of period t's cycle equation that
+/// reaches back before the sample, k long. `cycle_pre` stacks the cycle before
+/// it, (c_0', c_-1', .., c_1-p')'; empty means zero, and so does a t past p.
+inline arma::vec cycle_presample_term(const arma::mat &phi, const arma::vec &cycle_pre,
+                                      const arma::uword k, const arma::uword p, const arma::uword t)
+{
+    arma::vec out(k, arma::fill::zeros);
+    if (cycle_pre.n_elem == 0)
+    {
+        return out;
+    }
+    for (arma::uword j = t + 1; j <= p; j++)
+    {
+        const arma::uword i = j - t - 1;
+        out += phi.cols((j - 1) * k, j * k - 1) * cycle_pre.subvec(i * k, (i + 1) * k - 1);
+    }
+    return out;
+}
+
 /// The posterior precision of an unobserved path given everything else, as the
 /// upper blocks of a band, and its right hand side.
 struct UcTrendBand
@@ -182,10 +201,13 @@ struct UcTrendBand
 /// density like the cycle's, and needs no separate initialisation.
 ///
 /// `q` is the shock precision, one 2k x 2k matrix or a stack of one per period;
-/// `mean` the 2k x tt shock means, or empty for zero.
+/// `mean` the 2k x tt shock means, or empty for zero; `cycle_pre` the cycle
+/// before the sample, kp stacked (c_0', c_-1', .., c_1-p')' -- see
+/// UcCycleInit -- or empty for zero, which is the r_t above.
 inline UcTrendBand uc_trend_band(const VarSpec &spec, const arma::mat &y, const arma::mat &phi,
                                  const arma::mat &drift, const arma::vec &tau0, const arma::mat &q,
-                                 const arma::mat &mean = arma::mat())
+                                 const arma::mat &mean = arma::mat(),
+                                 const arma::vec &cycle_pre = arma::vec())
 {
     const arma::uword k = static_cast<arma::uword>(spec.k);
     const arma::uword tt = y.n_cols;
@@ -238,12 +260,14 @@ inline UcTrendBand uc_trend_band(const VarSpec &spec, const arma::mat &y, const 
             fill_mq(shock_precision_at(q, t));
         }
 
-        // The cycle half of r_t: the data part of c_t - sum_j Phi_j c_{t-j}.
+        // The cycle half of r_t: the data part of c_t - sum_j Phi_j c_{t-j},
+        // and the lags that reach back past the sample, which are constants.
         arma::vec ry = y.col(t);
         for (arma::uword j = 1; j <= p && j <= t; j++)
         {
             ry -= phi.cols((j - 1) * k, j * k - 1) * y.col(t - j);
         }
+        ry -= cycle_presample_term(phi, cycle_pre, k, p, t);
         r.head(k) = ry;
         r.tail(k) = trend_offset(drift.col(t), tau0, k, order, t);
         if (has_mean)
@@ -271,9 +295,10 @@ inline UcTrendBand uc_trend_band(const VarSpec &spec, const arma::mat &y, const 
 /// Draws the k x tt trend path given everything else; see uc_trend_band().
 inline arma::mat draw_uc_trend(const VarSpec &spec, const arma::mat &y, const arma::mat &phi,
                                const arma::mat &drift, const arma::vec &tau0, const arma::mat &q,
-                               const arma::mat &mean = arma::mat())
+                               const arma::mat &mean = arma::mat(),
+                               const arma::vec &cycle_pre = arma::vec())
 {
-    UcTrendBand sys = uc_trend_band(spec, y, phi, drift, tau0, q, mean);
+    UcTrendBand sys = uc_trend_band(spec, y, phi, drift, tau0, q, mean, cycle_pre);
     return chan_jeliazkov_2009_precision(std::move(sys.blocks), sys.rhs, sys.band);
 }
 
@@ -290,7 +315,8 @@ inline arma::mat draw_uc_trend(const VarSpec &spec, const arma::mat &y, const ar
 /// is the same, max(p, trend order), in blocks of twice the width.
 inline UcTrendBand uc_state_band(const VarSpec &spec, const arma::mat &y, const arma::mat &phi,
                                  const arma::mat &drift, const arma::vec &tau0, const arma::mat &q,
-                                 const arma::vec &irregular_inv, const arma::mat &mean = arma::mat())
+                                 const arma::vec &irregular_inv, const arma::mat &mean = arma::mat(),
+                                 const arma::vec &cycle_pre = arma::vec())
 {
     const arma::uword k = static_cast<arma::uword>(spec.k);
     const arma::uword tt = y.n_cols;
@@ -344,7 +370,8 @@ inline UcTrendBand uc_state_band(const VarSpec &spec, const arma::mat &y, const 
             fill_mq(shock_precision_at(q, t));
         }
 
-        r.head(k).zeros();
+        // The cycle's lags before the sample, constants given cycle_pre.
+        r.head(k) = -cycle_presample_term(phi, cycle_pre, k, p, t);
         r.tail(k) = trend_offset(drift.col(t), tau0, k, order, t);
         if (has_mean)
         {
@@ -383,17 +410,18 @@ struct UcPath
 /// model's `irregular_inv` empty -- and the two together where there is.
 inline UcPath draw_uc_path(const VarSpec &spec, const arma::mat &y, const arma::mat &phi,
                            const arma::mat &drift, const arma::vec &tau0, const arma::mat &q,
-                           const arma::vec &irregular_inv, const arma::mat &mean = arma::mat())
+                           const arma::vec &irregular_inv, const arma::mat &mean = arma::mat(),
+                           const arma::vec &cycle_pre = arma::vec())
 {
     UcPath out;
     if (irregular_inv.n_elem == 0)
     {
-        out.trend = draw_uc_trend(spec, y, phi, drift, tau0, q, mean);
+        out.trend = draw_uc_trend(spec, y, phi, drift, tau0, q, mean, cycle_pre);
         out.cycle = y - out.trend;
         return out;
     }
     const arma::uword k = static_cast<arma::uword>(spec.k);
-    UcTrendBand sys = uc_state_band(spec, y, phi, drift, tau0, q, irregular_inv, mean);
+    UcTrendBand sys = uc_state_band(spec, y, phi, drift, tau0, q, irregular_inv, mean, cycle_pre);
     const arma::mat x = chan_jeliazkov_2009_precision(std::move(sys.blocks), sys.rhs, sys.band);
     out.trend = x.rows(0, k - 1);
     out.cycle = x.rows(k, 2 * k - 1);
@@ -414,7 +442,8 @@ struct ShockRegression
 /// the trend.
 inline ShockRegression shock_regression_paths(const VarSpec &spec, const arma::mat &tau,
                                               const arma::mat &cycle, const arma::mat &d,
-                                              const arma::uvec &positions)
+                                              const arma::uvec &positions,
+                                              const arma::vec &cycle_pre = arma::vec())
 {
     const arma::uword k = static_cast<arma::uword>(spec.k);
     const arma::uword tt = tau.n_cols;
@@ -435,14 +464,22 @@ inline ShockRegression shock_regression_paths(const VarSpec &spec, const arma::m
         arma::mat x_t(2 * k, n_theta, arma::fill::zeros);
 
         // The cycle: c_t on its p lags, (x_t' kron I_k) vec(Phi), zero before
-        // the sample.
+        // the sample unless cycle_pre says what it was.
         out.w.col(t).head(k) = cycle.col(t);
         if (n_a > 0)
         {
             arma::vec lags(k * p, arma::fill::zeros);
-            for (arma::uword j = 1; j <= p && j <= t; j++)
+            for (arma::uword j = 1; j <= p; j++)
             {
-                lags.subvec((j - 1) * k, j * k - 1) = cycle.col(t - j);
+                if (j <= t)
+                {
+                    lags.subvec((j - 1) * k, j * k - 1) = cycle.col(t - j);
+                }
+                else if (cycle_pre.n_elem > 0)
+                {
+                    const arma::uword i = j - t - 1;
+                    lags.subvec((j - 1) * k, j * k - 1) = cycle_pre.subvec(i * k, (i + 1) * k - 1);
+                }
             }
             const arma::mat full = arma::kron(arma::trans(lags), eye_k);
             x_t.submat(0, 0, k - 1, n_a - 1) = full.cols(positions);
@@ -612,9 +649,13 @@ struct UcFilterTerms
 /// One step ahead log densities of y.col(0) .. y.col(periods - 1), started from
 /// the trend before the sample at tau0 and the cycle at zero, both known: given
 /// one draw of everything else, the start is not uncertain, and P_0 is zero.
+/// Under UcCycleInit::stationary the cycle before the sample is not a parameter
+/// but a state integrated out like the path: `initial_cycle_cov`, kp x kp, is
+/// its stationary covariance and becomes the cycle block of P_0.
 inline arma::rowvec filter_log_density(const UcStateSpace &ss, const arma::mat &y,
                                        const arma::mat &drift, const arma::vec &tau0,
-                                       const UcFilterTerms &terms = UcFilterTerms())
+                                       const UcFilterTerms &terms = UcFilterTerms(),
+                                       const arma::mat &initial_cycle_cov = arma::mat())
 {
     const arma::uword k = ss.k;
     const arma::uword periods = y.n_cols;
@@ -628,6 +669,12 @@ inline arma::rowvec filter_log_density(const UcStateSpace &ss, const arma::mat &
     arma::vec s(ss.m, arma::fill::zeros);
     s.head(tau0.n_elem) = tau0;
     arma::mat p_cov(ss.m, ss.m, arma::fill::zeros);
+    if (initial_cycle_cov.n_elem > 0)
+    {
+        const arma::uword cyc = tau0.n_elem;
+        p_cov.submat(cyc, cyc, cyc + initial_cycle_cov.n_rows - 1,
+                     cyc + initial_cycle_cov.n_cols - 1) = initial_cycle_cov;
+    }
     const arma::mat zt = arma::trans(ss.z);
 
     arma::rowvec out(periods);
@@ -797,6 +844,8 @@ public:
     arma::vec tau0() const { return theta_.tail(n_tau0_); }
     /// The whole of theta, as ShockRegression::x multiplies it.
     const arma::vec &theta() const { return theta_; }
+    /// Puts theta back, for a Metropolis-Hastings step that rejects a draw.
+    void set_theta(const arma::vec &theta) { theta_ = theta; }
 
     /// Draws theta given the shocks' regression on it, under a shock precision
     /// q -- one matrix or a stack of one per period -- and shock means `mean`,
@@ -945,6 +994,200 @@ inline arma::mat uc_cycle_at(const VarSpec &spec, const arma::mat &y, const arma
     }
     return y - tau;
 }
+
+// ---------------------------------------------------------------------------
+// The cycle before the sample, under UcCycleInit::stationary.
+//
+// The p values the first lags reach back to, s_0 = (c_0', c_-1', .., c_1-p')',
+// are a parameter of their own with the stationary distribution of the cycle as
+// its prior, N(0, Gamma), Gamma the covariance of p consecutive values of a
+// VAR(p) with coefficients Phi and shock covariance Sigma_c -- the cycle block
+// of the shock covariance, since only the cycle's shocks move the cycle. Given
+// everything else s_0 is normal, and given s_0 the rest is drawn as before with
+// s_0 in place of the zeros. Gamma depends on Phi and on Sigma_c, so the blocks
+// that draw those keep their proposals -- the conditionals without that one
+// factor -- and accept with the ratio of N(s_0; 0, Gamma) under the new and the
+// old values, which is Metropolis-Hastings with the conditional as proposal.
+// ---------------------------------------------------------------------------
+
+/// Gamma = F Gamma F' + E Sigma_c E', the covariance of the companion state of
+/// a stationary VAR(p) with coefficients `phi` (k x kp) and shock covariance
+/// `sigma_c` (k x k), kp x kp. Solved through vec(Gamma) = (I - F kron F)^-1
+/// vec(E Sigma_c E'), which is exact and small at the sizes a cycle has. Throws
+/// if F has a root on or outside the unit circle, where there is none.
+inline arma::mat cycle_stationary_covariance(const arma::mat &phi, const arma::mat &sigma_c)
+{
+    const arma::uword k = phi.n_rows;
+    const arma::uword n = phi.n_cols;
+    arma::mat f(n, n, arma::fill::zeros);
+    f.rows(0, k - 1) = phi;
+    if (n > k)
+    {
+        f.submat(k, 0, n - 1, n - k - 1) = arma::eye<arma::mat>(n - k, n - k);
+    }
+    arma::mat e_sigma(n, n, arma::fill::zeros);
+    e_sigma.submat(0, 0, k - 1, k - 1) = sigma_c;
+
+    const arma::mat lhs = arma::eye<arma::mat>(n * n, n * n) - arma::kron(f, f);
+    arma::vec gamma_vec;
+    if (!arma::solve(gamma_vec, lhs, arma::vectorise(e_sigma), arma::solve_opts::no_approx))
+    {
+        throw std::runtime_error("unobserved components: the cycle has no stationary "
+                                 "distribution at the drawn coefficients");
+    }
+    return arma::symmatu(arma::reshape(gamma_vec, n, n));
+}
+
+/// log N(cycle_pre; 0, gamma), or -inf where gamma is not positive definite --
+/// which a Metropolis-Hastings step then never moves to.
+inline double cycle_presample_log_density(const arma::vec &cycle_pre, const arma::mat &gamma)
+{
+    arma::mat root;
+    if (!arma::chol(root, gamma))
+    {
+        return -arma::datum::inf;
+    }
+    const arma::vec z = arma::solve(arma::trimatl(arma::trans(root)), cycle_pre);
+    return -0.5 * static_cast<double>(cycle_pre.n_elem) * std::log(2.0 * arma::datum::pi) -
+           arma::accu(arma::log(root.diag())) - 0.5 * arma::dot(z, z);
+}
+
+/// The cycle block, k x k, of the covariance a shock precision stands for.
+inline arma::mat cycle_shock_covariance(const arma::mat &q, const arma::uword k)
+{
+    return uc_covariance_of_precision(q).submat(0, 0, k - 1, k - 1);
+}
+
+/// The posterior precision and right hand side of s_0 given everything else.
+/// The prior is N(0, gamma); the first p periods' shocks are e_t = b_t - G_t s_0,
+/// b_t their value with s_0 at zero and G_t holding Phi_j in the cycle rows of
+/// block column j - t - 1 for every lag j that reaches before the sample.
+/// `shocks_zero` is b, 2k x tt (only its first p columns are read), `q` the
+/// constant shock precision.
+inline void cycle_presample_posterior(const arma::mat &phi, const arma::mat &gamma,
+                                      const arma::mat &shocks_zero, const arma::mat &q,
+                                      arma::mat &post_vinv, arma::vec &post_rhs)
+{
+    const arma::uword k = phi.n_rows;
+    const arma::uword p = phi.n_cols / k;
+    const arma::uword n = k * p;
+    if (!arma::inv_sympd(post_vinv, gamma))
+    {
+        throw std::runtime_error("unobserved components: the stationary covariance of the cycle "
+                                 "is not positive definite");
+    }
+    post_rhs = arma::zeros<arma::vec>(n);
+    for (arma::uword t = 0; t < p && t < shocks_zero.n_cols; t++)
+    {
+        arma::mat g(2 * k, n, arma::fill::zeros);
+        for (arma::uword j = t + 1; j <= p; j++)
+        {
+            const arma::uword i = j - t - 1;
+            g.submat(0, i * k, k - 1, (i + 1) * k - 1) = phi.cols((j - 1) * k, j * k - 1);
+        }
+        const arma::mat gq = arma::trans(g) * q;
+        post_vinv += gq * g;
+        post_rhs += gq * shocks_zero.col(t);
+    }
+}
+
+/// Draws s_0 given everything else; see cycle_presample_posterior().
+inline arma::vec draw_cycle_presample(const arma::mat &phi, const arma::mat &gamma,
+                                      const arma::mat &shocks_zero, const arma::mat &q)
+{
+    arma::mat post_vinv;
+    arma::vec post_rhs;
+    cycle_presample_posterior(phi, gamma, shocks_zero, q, post_vinv, post_rhs);
+    return draw_normal_precision(post_vinv, post_rhs);
+}
+
+/// The state of the cycle before the sample in a sampler with one shock
+/// precision per draw: s_0, the Gamma it is drawn under and its log density
+/// there, kept so that a block that moves Phi or Sigma_c can accept or reject.
+/// Inactive -- every member empty, accept() always true and consuming no random
+/// numbers -- under UcCycleInit::zero, which is what keeps those draws as they
+/// were.
+class UcCyclePresample
+{
+public:
+    UcCyclePresample(const VarSpec &spec, const arma::mat &phi, const arma::mat &q)
+    {
+        active_ = spec.cycle_init == UcCycleInit::stationary && spec.p > 0;
+        if (!active_)
+        {
+            return;
+        }
+        k_ = static_cast<arma::uword>(spec.k);
+        value_ = arma::zeros<arma::vec>(k_ * static_cast<arma::uword>(spec.p));
+        try
+        {
+            set(phi, q);
+        }
+        catch (const std::runtime_error &)
+        {
+            throw std::invalid_argument(
+                "/model/cycle_init stationary needs initial cycle coefficients /initial/a that "
+                "describe a stationary cycle, whose stationary distribution the chain starts from");
+        }
+    }
+
+    bool active() const { return active_; }
+    /// s_0, or empty for zero.
+    const arma::vec &value() const { return value_; }
+
+    /// Whether to keep a move of Phi or of the shock precision to (phi, q): the
+    /// Metropolis-Hastings ratio of N(s_0; 0, Gamma). Remembers the new Gamma if
+    /// it does.
+    bool accept(const arma::mat &phi, const arma::mat &q)
+    {
+        if (!active_)
+        {
+            return true;
+        }
+        arma::mat gamma;
+        try
+        {
+            gamma = cycle_stationary_covariance(phi, cycle_shock_covariance(q, k_));
+        }
+        catch (const std::runtime_error &)
+        {
+            return false;
+        }
+        const double log_density = cycle_presample_log_density(value_, gamma);
+        if (!std::isfinite(log_density) ||
+            std::log(arma::randu<double>()) > log_density - log_density_)
+        {
+            return false;
+        }
+        gamma_ = gamma;
+        log_density_ = log_density;
+        return true;
+    }
+
+    /// Draws s_0 given the first p periods' shocks with s_0 at zero.
+    void draw(const arma::mat &phi, const arma::mat &shocks_zero, const arma::mat &q)
+    {
+        if (!active_)
+        {
+            return;
+        }
+        value_ = draw_cycle_presample(phi, gamma_, shocks_zero, q);
+        log_density_ = cycle_presample_log_density(value_, gamma_);
+    }
+
+private:
+    void set(const arma::mat &phi, const arma::mat &q)
+    {
+        gamma_ = cycle_stationary_covariance(phi, cycle_shock_covariance(q, k_));
+        log_density_ = cycle_presample_log_density(value_, gamma_);
+    }
+
+    bool active_ = false;
+    arma::uword k_ = 0;
+    arma::vec value_;
+    arma::mat gamma_;
+    double log_density_ = 0.0;
+};
 
 } // namespace bayests::core
 

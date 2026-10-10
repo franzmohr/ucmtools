@@ -8,6 +8,7 @@
 #include "core/models/uc_constant_support.h"
 #include "core/models/uc_support.h"
 
+#include <algorithm>
 #include <stdexcept>
 #include <string>
 
@@ -91,6 +92,14 @@ UcNormalGammaDraws UcNormalGammaSampler::draw_coefficients(const UcNormalGammaIn
         out.irregular_inv = arma::mat(k, iterations);
     }
 
+    // The cycle before the sample: zeros under UcCycleInit::zero, which leaves
+    // every step below exactly as it was; a drawn state under stationary.
+    core::UcCyclePresample presample(spec, coef.phi(), q);
+    if (presample.active())
+    {
+        out.cycle0 = arma::mat(k * p, iterations);
+    }
+
     int unstationary_sweeps = 0;
     arma::mat shocks_path(shocks, tt);
 
@@ -103,14 +112,35 @@ UcNormalGammaDraws UcNormalGammaSampler::draw_coefficients(const UcNormalGammaIn
         // irregular component separates the two from the series.
         const core::UcPath path = core::draw_uc_path(spec, y, coef.phi(),
                                                      core::drift_path(coef.c(), d, k, tt),
-                                                     coef.tau0(), q, irregular_inv);
+                                                     coef.tau0(), q, irregular_inv, arma::mat(),
+                                                     presample.value());
 
         // Update the cycle coefficients, the drift and tau0, jointly given it
-        const core::ShockRegression reg =
-            core::shock_regression_paths(spec, path.trend, path.cycle, d, coef.positions());
+        core::ShockRegression reg = core::shock_regression_paths(
+            spec, path.trend, path.cycle, d, coef.positions(), presample.value());
+        const arma::vec theta_before = coef.theta();
         if (!coef.draw(reg, q, arma::mat()))
         {
             unstationary_sweeps++;
+        }
+        else if (!presample.accept(coef.phi(), q))
+        {
+            coef.set_theta(theta_before);
+        }
+
+        // Update the cycle before the sample, given its first p periods
+        if (presample.active())
+        {
+            const core::ShockRegression zero = core::shock_regression_paths(
+                spec, path.trend, path.cycle, d, coef.positions());
+            arma::mat shocks_zero(shocks, std::min<arma::uword>(p, tt));
+            for (arma::uword t = 0; t < shocks_zero.n_cols; t++)
+            {
+                shocks_zero.col(t) = zero.w.col(t) - zero.x.slice(t) * coef.theta();
+            }
+            presample.draw(coef.phi(), shocks_zero, q);
+            reg = core::shock_regression_paths(spec, path.trend, path.cycle, d, coef.positions(),
+                                               presample.value());
         }
 
         for (arma::uword t = 0; t < tt; t++)
@@ -127,19 +157,30 @@ UcNormalGammaDraws UcNormalGammaSampler::draw_coefficients(const UcNormalGammaIn
             const arma::sp_mat weight =
                 arma::kron(arma::speye<arma::sp_mat>(tt, tt), arma::sp_mat(omega_lower));
             const arma::mat wz = weight * psi_z;
-            psi = draw_normal_precision(input.psi_prior.v_inv + arma::trans(wz) * psi_z,
-                                        input.psi_prior.v_inv * input.psi_prior.mu +
-                                            arma::trans(wz) * psi_y);
-            fill_strict_lower_triangle(Psi, psi);
+            const arma::vec psi_new = draw_normal_precision(
+                input.psi_prior.v_inv + arma::trans(wz) * psi_z,
+                input.psi_prior.v_inv * input.psi_prior.mu + arma::trans(wz) * psi_y);
+            arma::mat Psi_new = Psi;
+            fill_strict_lower_triangle(Psi_new, psi_new);
+            if (presample.accept(coef.phi(), arma::trans(Psi_new) * arma::diagmat(omega) * Psi_new))
+            {
+                psi = psi_new;
+                Psi = Psi_new;
+            }
             shocks_path = Psi * shocks_path;
         }
 
         // Update Omega
         const arma::vec sse = arma::sum(arma::square(shocks_path), 1);
+        arma::vec omega_new(shocks);
         for (arma::uword i = 0; i < shocks; i++)
         {
-            omega(i) = arma::randg<double>(arma::distr_param(
+            omega_new(i) = arma::randg<double>(arma::distr_param(
                 omega_post_shape(i), 1.0 / (input.u_sigma_prior.rate(i) + sse(i) * 0.5)));
+        }
+        if (presample.accept(coef.phi(), arma::trans(Psi) * arma::diagmat(omega_new) * Psi))
+        {
+            omega = omega_new;
         }
         q = arma::trans(Psi) * arma::diagmat(omega) * Psi;
 
@@ -169,6 +210,10 @@ UcNormalGammaDraws UcNormalGammaSampler::draw_coefficients(const UcNormalGammaIn
             }
             out.u_omega_inv.col(pos) = omega;
             out.u_sigma_inv.col(pos) = arma::vectorise(q);
+            if (presample.active())
+            {
+                out.cycle0.col(pos) = presample.value();
+            }
             if (use_irregular)
             {
                 out.cycle.col(pos) = arma::vectorise(path.cycle);

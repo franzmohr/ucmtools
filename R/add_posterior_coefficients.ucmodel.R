@@ -36,7 +36,9 @@
 #'   innovations;}
 #'   \item{\code{irregular_inv}}{the precisions of the irregular component;}
 #'   \item{\code{skew}, \code{skew_latent}}{the coefficients of the log scales of
-#'   the skewed shock and its latent variates.}
+#'   the skewed shock and its latent variates;}
+#'   \item{\code{cycle0}}{under \code{cycle_init = "stationary"}, the cycle
+#'   before the sample, \eqn{(c_0', \dots, c_{1-p}')'}.}
 #' }
 #'
 #' @return \code{object} with element \code{posterior}, or with
@@ -96,6 +98,11 @@ add_posterior_coefficients.ucmodel <- function(object, posterior_function = NULL
     order <- ncol(posterior[["tau0"]][["coeffs"]]) / length(series)
     colnames(posterior[["tau0"]][["coeffs"]]) <- paste0(rep(series, order), ".tau",
                                                         rep(-(seq_len(order) - 1), each = length(series)))
+  }
+  if (!is.null(posterior[["cycle0"]][["coeffs"]])) {
+    p0 <- ncol(posterior[["cycle0"]][["coeffs"]]) / length(series)
+    colnames(posterior[["cycle0"]][["coeffs"]]) <- paste0(rep(series, p0), ".c",
+                                                          rep(-(seq_len(p0) - 1), each = length(series)))
   }
   if (!is.null(posterior[["a"]][["coeffs"]])) {
     k <- length(series)
