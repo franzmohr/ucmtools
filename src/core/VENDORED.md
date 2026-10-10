@@ -6,7 +6,18 @@
 project is here -- the core links neither HDF5 nor HighFive, prints nothing and
 reads no files, which is what makes it embeddable in an R package.
 
-The copy is **BayesTS `4808dff`**, the tip of upstream's `uc-cycle-init`
+The copy is **BayesTS `02a41de`**, BayesTS `main` after merging `bc27dfe` and `02a41de`. `bc27dfe` adds the damped
+trend and the signal equations to UcNormalGamma and UcNormalWishart, the
+European Commission's output gap models nested in them; `02a41de` moves
+`require_uc_signal_data()` from `uc_support.h` to `model_support.h`, so that
+`inputs.cpp` no longer includes the unobserved components support header. It changes `spec.h`,
+`inputs.h`, `results.h`, `spec.cpp`, `inputs.cpp`, `model_support.h`,
+`uc_support.h`, `uc_constant_support.h` and the two models' sources. Draws of a
+file without the new attributes are unchanged; upstream compared the
+fingerprints of all 202 fixtures, none moved. Neither addition is reachable from
+R yet.
+
+Before that the copy was **BayesTS `4808dff`**, the tip of upstream's `uc-cycle-init`
 branch off `main` at `22b3488`: `/model/cycle_init = "stationary"`, the cycle
 before the sample drawn from its stationary distribution in UcNormalGamma and
 UcNormalWishart (`spec.h`, `results.h`, `spec.cpp`, `inputs.cpp`,
