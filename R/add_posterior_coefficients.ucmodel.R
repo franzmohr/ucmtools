@@ -38,7 +38,12 @@
 #'   \item{\code{skew}, \code{skew_latent}}{the coefficients of the log scales of
 #'   the skewed shock and its latent variates;}
 #'   \item{\code{cycle0}}{under \code{cycle_init = "stationary"}, the cycle
-#'   before the sample, \eqn{(c_0', \dots, c_{1-p}')'}.}
+#'   before the sample, \eqn{(c_0', \dots, c_{1-p}')'};}
+#'   \item{\code{rho}}{under \code{trend = "damped"}, the slope's
+#'   autoregressive coefficient of each series;}
+#'   \item{\code{signal}, \code{signal_noise_inv}}{with signals, the
+#'   coefficients of their equations, vec\eqn{(B, \Lambda_0, \dots, \Lambda_q)},
+#'   named \code{<signal>.<regressor>}, and the precisions of their noise.}
 #' }
 #'
 #' @return \code{object} with element \code{posterior}, or with
@@ -103,6 +108,24 @@ add_posterior_coefficients.ucmodel <- function(object, posterior_function = NULL
     p0 <- ncol(posterior[["cycle0"]][["coeffs"]]) / length(series)
     colnames(posterior[["cycle0"]][["coeffs"]]) <- paste0(rep(series, p0), ".c",
                                                           rep(-(seq_len(p0) - 1), each = length(series)))
+  }
+  if (!is.null(posterior[["rho"]][["coeffs"]])) {
+    colnames(posterior[["rho"]][["coeffs"]]) <- paste0(series, ".rho")
+  }
+  if (!is.null(posterior[["signal"]][["coeffs"]])) {
+    # A model read back from a file may have lost the column names.
+    signals <- colnames(object[["data"]][["signal"]])
+    if (is.null(signals)) signals <- paste0("s", seq_len(model[["n_signals"]]))
+    signal_x <- colnames(object[["data"]][["signal_x"]])
+    if (is.null(signal_x) && model[["n_signal_x"]] > 0) {
+      signal_x <- paste0("x", seq_len(model[["n_signal_x"]]))
+    }
+    regressors <- c(signal_x,
+                    paste0(rep(series, model[["signal_lags"]] + 1), ".l",
+                           rep(seq(0, model[["signal_lags"]]), each = length(series))))
+    colnames(posterior[["signal"]][["coeffs"]]) <-
+      paste0(rep(signals, length(regressors)), ".", rep(regressors, each = length(signals)))
+    colnames(posterior[["signal_noise_inv"]][["coeffs"]]) <- signals
   }
   if (!is.null(posterior[["a"]][["coeffs"]])) {
     k <- length(series)

@@ -1,5 +1,24 @@
 # ucmtools 0.0.0.9000
 
+* **A damped trend and signal equations: the European Commission's output gap
+  models.** `create_ucmodel(trend = "damped")` makes the trend's slope a
+  stationary AR(1), one `rho` per series under a normal prior truncated to
+  (-1, 1), `add_priors(rho = )`, drawn as `posterior$rho`. Argument `signal`
+  adds further observed series that load on the cycle at lags 0 to
+  `signal_lags`, with a constant (`signal_const`) and regressors of their own
+  (`signal_x`): the capacity utilisation indicator on the cycle of total factor
+  productivity, or a Phillips curve on the unemployment gap (Havik et al.
+  2014). Their priors are `add_priors(signal = , signal_noise = )`, their draws
+  `posterior$signal`, named `<signal>.<regressor>`, and
+  `posterior$signal_noise_inv`. The log likelihood is the density of the series
+  and the signals together; a forecast and its score are of the series alone.
+  Both are available for `error = "gamma"`, `"gamma+covar"` and `"wishart"`,
+  and signals not with `cycle_init = "stationary"`. Both are written to and
+  read from the model file under the names BayesTS gives them. Draws of a model
+  without them are unchanged: fixed-seed coefficients, log likelihoods and
+  forecasts of every error specification, both cycle starts, are identical to
+  those of a clean build of the previous version.
+
 * The vendored BayesTS core moves to `02a41de`, which adds a damped trend and
   signal equations to UcNormalGamma and UcNormalWishart: the European
   Commission's output gap models, nested. Neither is reachable from R yet, so

@@ -1,10 +1,12 @@
 # ucmtools
 
 Bayesian inference of unobserved components models in R: trend-cycle
-decompositions of one or more time series, with a random walk or smooth trend,
-a drift and breaks in it, a stationary autoregressive cycle, an optional
-irregular component, and shocks that are independent, correlated, stochastically
-volatile or skewed.
+decompositions of one or more time series, with a random walk, smooth or damped
+trend, a drift and breaks in it, a stationary autoregressive cycle, an optional
+irregular component, signal equations that load further observed series on the
+cycle, and shocks that are independent, correlated, stochastically volatile or
+skewed. A damped trend and a signal give the trend-cycle models of the European
+Commission's output gap estimates.
 
 The posterior is simulated by the Gibbs samplers of
 [BayesTS](https://github.com/franzmohr/BayesTS), vendored into the package, and

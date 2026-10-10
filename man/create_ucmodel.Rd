@@ -18,6 +18,10 @@ create_ucmodel(
   skew = "snd",
   skew_shock = "cycle",
   skew_x = NULL,
+  signal = NULL,
+  signal_lags = 0,
+  signal_x = NULL,
+  signal_const = TRUE,
   iterations = 10000,
   burnin = 2000,
   thin = 1
@@ -33,16 +37,21 @@ leaves it white noise, which is the local level model. A vector gives a list
 of models, one per order.}
 
 \item{trend}{\code{"rw"} for a random walk trend, whose first differences are
-the shocks, or \code{"smooth"} for a smooth trend, whose second differences
-are.}
+the shocks, \code{"smooth"} for a smooth trend, whose second differences
+are, or \code{"damped"} for a damped trend, whose slope is a stationary
+autoregression of order one, as in the European Commission's production
+function method (Havik et al. 2014). \code{"damped"} is available for
+\code{error = "gamma"}, \code{"gamma+covar"} and \code{"wishart"}; its
+coefficients are \code{posterior$rho}.}
 
 \item{cycle}{\code{"var"} to regress each cycle on the lags of every cycle,
 or \code{"own"} to regress each on its own lags only. The two are the same
 for one series.}
 
 \item{drift}{logical. Should the trend have a drift, a constant in its
-increment? Defaults to \code{TRUE} for a random walk trend and \code{FALSE}
-for a smooth one.}
+increment? Defaults to \code{TRUE} for a random walk and a damped trend and
+\code{FALSE} for a smooth one. Under a damped trend the slope's mean is the
+drift divided by \eqn{1 - \rho}.}
 
 \item{breaks}{the periods in which the drift breaks, as a list of
 \code{c(year, period)} pairs or a vector of times in the units of
@@ -80,6 +89,26 @@ and an optional time-series object of the variables the log scales of the
 skewed shock move with, such as an uncertainty index, covering the periods of
 \code{y}.}
 
+\item{signal}{an optional time-series object of further observed series,
+the signals, each a regression on the cycle at lags 0 to
+\code{signal_lags}: the capacity utilisation indicator on the cycle of total
+factor productivity, or a Phillips curve on the unemployment gap. A signal
+informs the cycle, and through it the trend, but is not forecast. It must
+cover the periods of \code{y} without missing values. Available for
+\code{error = "gamma"}, \code{"gamma+covar"} and \code{"wishart"}, and not
+with \code{cycle_init = "stationary"}, since the signals read the cycle
+before the sample as zero.}
+
+\item{signal_lags}{the last lag of the cycle the signals load on; zero for
+the current cycle only.}
+
+\item{signal_x}{an optional time-series object of regressors of the signal
+equations besides the cycle, covering the periods of \code{y}. Every signal
+regresses on all of them.}
+
+\item{signal_const}{logical. Should the signal equations have a constant, as
+the first of their regressors?}
+
 \item{iterations}{an integer of MCMC draws kept after the burn-in.}
 
 \item{burnin}{an integer of MCMC draws discarded first.}
@@ -101,7 +130,15 @@ The model of series \eqn{i} is
 \deqn{c_t = \Phi_1 c_{t-1} + \dots + \Phi_p c_{t-p} + u^c_t,}
 \deqn{\tau_t = \tau_{t-1} + C d_t + u^\tau_t}
 for a random walk trend, and \eqn{\tau_t = 2\tau_{t-1} - \tau_{t-2} + C d_t + u^\tau_t}
-for a smooth one, where \eqn{d_t} holds the drift and its breaks. It nests
+for a smooth one, and
+\eqn{\tau_t - \tau_{t-1} = \rho (\tau_{t-1} - \tau_{t-2}) + C d_t + u^\tau_t}
+with \eqn{|\rho| < 1}, one \eqn{\rho} per series, for a damped one, where
+\eqn{d_t} holds the drift and its breaks. Signals add the equations
+\deqn{s_t = B x^s_t + \Lambda_0 c_t + \dots + \Lambda_q c_{t-q} + v_t,}
+with independent normal noise \eqn{v_t}, where \eqn{x^s_t} holds the
+constant and \code{signal_x}, and \eqn{q} is \code{signal_lags}. A damped
+trend and a signal together give the trend-cycle models the European
+Commission estimates potential output with (Havik et al. 2014). It nests
 the decompositions of Clark (1987), Morley, Nelson and Zivot (2003) and
 Grant and Chan (2017), the local level model, the smooth-trend output gap
 model and, with stochastic volatility, the UCSV model of Stock and Watson
@@ -129,6 +166,11 @@ Clark, P. K. (1987). The cyclical component of U.S. economic activity.
 Grant, A. L., & Chan, J. C. C. (2017). A Bayesian model comparison for
 trend-cycle decompositions of output. \emph{Journal of Money, Credit and
 Banking, 49}(2--3), 525--552.
+
+Havik, K., Mc Morrow, K., Orlandi, F., Planas, C., Raciborski, R., Roeger,
+W., Rossi, A., Thum-Thysen, A., & Vandermeulen, V. (2014). The production
+function methodology for calculating potential growth rates and output gaps.
+\emph{European Economy, Economic Papers 535}. European Commission.
 
 Huang, Luo and Wang (2026), on unobserved components models with skewed
 shocks whose scales move with macroeconomic uncertainty.

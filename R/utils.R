@@ -72,8 +72,16 @@
 .uc_dims <- function(model, n_det = 0, n_skew = 0) {
   k <- model[["k"]]
   p <- model[["p"]]
-  order <- if (identical(model[["trend"]], "smooth")) 2 else 1
+  order <- if (identical(model[["trend"]], "rw") || is.null(model[["trend"]])) 1 else 2
+  n_signals <- if (is.null(model[["n_signals"]])) 0 else model[["n_signals"]]
+  n_signal_reg <- if (n_signals > 0) {
+    model[["n_signal_x"]] + k * (model[["signal_lags"]] + 1)
+  } else {
+    0
+  }
   list(k = k, p = p, n = n_det, order = order,
+       n_signals = n_signals, n_signal_reg = n_signal_reg,
+       n_signal = n_signals * n_signal_reg,
        n_a = if (p == 0) 0 else if (identical(model[["cycle"]], "own")) k * p else k * k * p,
        n_c = k * n_det,
        n_tau0 = k * order,
@@ -90,6 +98,15 @@
   s2 <- apply(y, 2, function(x) stats::var(diff(x), na.rm = TRUE))
   s2[!is.finite(s2) | s2 <= 0] <- 1
   unname(s2)
+}
+
+# The variance of each column in levels, for series that do not trend: the
+# signals, whose noise priors and starts are set on it. One where a column has no
+# variation.
+.uc_level_scale <- function(x) {
+  v <- apply(as.matrix(x), 2, stats::var)
+  v[!is.finite(v) | v <= 0] <- 1
+  unname(v)
 }
 
 # Whether a model carries a covariance block over its shocks.

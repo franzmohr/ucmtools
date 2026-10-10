@@ -174,6 +174,10 @@ print.ucmodel <- function(x, ...) {
   cat("  Cycle:      ", if (model[["p"]] == 0) "white noise" else
     paste0(model[["cycle"]], "(", model[["p"]], ")"), "\n", sep = "")
   if (isTRUE(model[["irregular"]])) cat("  Irregular:  yes\n")
+  if (!is.null(x[["data"]][["signal"]])) {
+    cat("  Signals:    ", paste(colnames(x[["data"]][["signal"]]), collapse = ", "),
+        " on the cycle at lags 0 to ", model[["signal_lags"]], "\n", sep = "")
+  }
   cat("  Error:      ", model[["error"]], "\n", sep = "")
   cat("  Draws:      ", model[["iterations"]], " after a burn-in of ", model[["burnin"]],
       if (!is.null(model[["thin"]])) paste0(", thinned by ", model[["thin"]]), "\n", sep = "")

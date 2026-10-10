@@ -36,6 +36,7 @@ The R object names its priors, starting values and draws as the
 file does, so the two hold the same elements under the same names. The
 series are \code{/data/train/y}, the drift's terms \code{/data/train/x} and
 over the horizon \code{/data/forecast/x}, the skew index
-\code{/data/train/skew_x} and \code{/data/forecast/skew_x}, and the realised
-values \code{/data/test/y}.
+\code{/data/train/skew_x} and \code{/data/forecast/skew_x}, the signals and
+their regressors \code{/data/train/signal} and \code{/data/train/signal_x},
+and the realised values \code{/data/test/y}.
 }
