@@ -1,0 +1,20 @@
+^.*\.Rproj$
+^\.Rproj\.user$
+^README\.Rmd$
+^cran-comments\.md$
+^data-raw$
+^tools$
+^\.claude$
+^\.github$
+^LICENSE\.md$
+^\.Rhistory$
+^vignettes/.*\.orig$
+^vignettes/precompile\.R$
+## R CMD build cleans the top level of src/ only, so the vendored core's build
+## products would otherwise be shipped in the tarball -- the same reason
+## src/Makevars has to name them in OBJECTS.
+^src/.*\.o$
+^src/.*\.so$
+^src/.*\.dll$
+^src/.*\.dylib$
+^CLAUDE\.md$

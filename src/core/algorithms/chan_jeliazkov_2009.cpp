@@ -1,0 +1,742 @@
+// SPDX-License-Identifier: BSD-3-Clause
+// Copyright (c) 2026 Franz X. Mohr
+
+#include "chan_jeliazkov_2009.h"
+
+#include "bayests/arma.h"
+
+#include <cstdint>
+#include <cstring>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+/**
+ * @file chan_jeliazkov_2009.cpp
+ * @brief Precision based draw of a state path, after Chan and Jeliazkov (2009).
+ *
+ * The alternative to `kalman_durbin_koopman_2002` for the same conditional
+ * posterior. Rather than filtering forward and sampling backward, the whole path
+ * is treated as one Gaussian vector whose precision is block tridiagonal --
+ * because the state equation is first order Markov and the measurement of one
+ * period touches one state -- and drawn in a single pass over a block banded
+ * Cholesky. The two are the same distribution reached two ways, so which is
+ * faster is a question about constants rather than about orders.
+ *
+ * Both take their arguments in the same shapes and return the same thing, so a
+ * caller can swap one for the other, and a test can put the same inputs through
+ * both and compare what comes out.
+ *
+ * Two entry points, and the second is why the work below is split into an
+ * assembly, an optional conditioning step and a draw rather than written as one
+ * function. `chan_jeliazkov_2009` draws the whole state.
+ * `chan_jeliazkov_2009_conditional` draws part of it, the rest being data: a
+ * factor augmented VAR has observed variables in its state vector, and they are
+ * conditioned on rather than drawn. Conditioning is a statement about the
+ * assembled precision and nothing else, so it sits between the two halves and
+ * neither half knows about it.
+ */
+
+namespace
+{
+
+void require(bool ok, const std::string &what)
+{
+  if (!ok) {
+    throw std::invalid_argument("chan_jeliazkov_2009: " + what);
+  }
+}
+
+std::string dims(const arma::mat &m)
+{
+  return std::to_string(m.n_rows) + "x" + std::to_string(m.n_cols);
+}
+
+/// True if every element is a finite number, read off the exponent bits.
+///
+/// Not `arma::is_finite()` and not `std::isfinite()`, for the reason
+/// `stochvol_mixture.h` sets out at length: a host that compiles these sources
+/// with `-ffast-math` is licensed to fold either of them to `true`.
+bool all_finite(const arma::mat &m)
+{
+  static_assert(sizeof(double) == sizeof(std::uint64_t), "expected IEEE-754 binary64");
+
+  const arma::uword n = m.n_elem;
+  for (arma::uword i = 0; i < n; i++) {
+    std::uint64_t bits;
+    const double value = m[i];
+    std::memcpy(&bits, &value, sizeof(bits));
+    if ((bits & 0x7ff0000000000000ULL) == 0x7ff0000000000000ULL) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/// True if every off-diagonal element is exactly zero.
+///
+/// Scanned column by column and bailing at the first non-zero, so a dense
+/// argument pays O(K^2) comparisons on top of the O(K^3) factorisation it was
+/// going to pay anyway -- a few percent -- and a diagonal one saves the
+/// factorisation outright.
+///
+/// Exact equality rather than a tolerance. The covariances this is meant to
+/// catch are built by `arma::diagmat`, which writes literal zeros; a matrix that
+/// is diagonal only to within rounding has off-diagonal information in it, and
+/// dropping that silently would be a different model rather than a faster route
+/// to the same one.
+bool is_diagonal(const arma::mat &sigma)
+{
+  if (sigma.n_rows != sigma.n_cols) {
+    return false;
+  }
+  const arma::uword n = sigma.n_rows;
+  for (arma::uword j = 0; j < n; j++) {
+    for (arma::uword i = 0; i < n; i++) {
+      if (i != j && sigma(i, j) != 0.0) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+/// The inverse of a covariance, by the symmetric positive definite route -- or,
+/// when the covariance is diagonal, by dividing.
+///
+/// The branch is here rather than at the call sites because it pays off in
+/// proportion to how often this runs, and that is a property of the caller's
+/// model rather than of the line: a constant covariance is inverted once per
+/// draw and the branch is noise, while a covariance that moves with time is
+/// inverted once per *period*. A dynamic factor model with stochastic volatility
+/// is the second case in both of its equations, and its K is the number of
+/// observed series -- at 100 series over 300 periods this is 300 dense
+/// factorisations of a matrix that is zero off the diagonal, some 3e8 flops a
+/// draw, against 3e6 for the scan and the divisions.
+///
+/// Every time-varying parameter model here also reaches this with a diagonal
+/// state covariance, and the dynamic factor models with a diagonal one in both
+/// equations, so nothing in this library that hits the branch takes the dense
+/// path.
+arma::mat precision_of(const arma::mat &sigma, const char *what)
+{
+  const std::string not_spd =
+      std::string(what) + " is not symmetric positive definite, so it has no precision";
+
+  if (is_diagonal(sigma)) {
+    // A diagonal matrix is positive definite exactly when its diagonal is, so
+    // this is the same check `inv_sympd` would have made, and it is worth making
+    // explicitly: `1.0 / 0.0` is an infinity that would otherwise travel into
+    // the band and only surface as a non-finite draw at the very end.
+    const arma::vec diagonal = sigma.diag();
+    require(all_finite(diagonal) && diagonal.min() > 0.0, not_spd);
+    return arma::diagmat(1.0 / diagonal);
+  }
+
+  arma::mat out;
+  require(arma::inv_sympd(out, sigma), not_spd);
+  return out;
+}
+
+/// The banded precision of a state path and the right hand side that goes with
+/// it: everything about the posterior except the draw.
+///
+/// `blocks` holds the upper triangle only, since K is symmetric: `block(i, d)`
+/// is the M x M block at row i and column i + d, for d = 0 ... p. The diagonal
+/// blocks are stored whole rather than as a triangle -- every term that reaches
+/// one is symmetric -- which is what lets the conditioning step below read a
+/// cross block off them.
+struct BandSystem
+{
+  std::vector<arma::mat> blocks;
+  arma::mat rhs;
+  arma::uword m = 0; ///< State elements per period, the block size.
+  arma::uword n = 0; ///< State columns.
+  arma::uword p = 0; ///< Bandwidth, the order of the transition.
+
+  arma::mat &block(arma::uword i, arma::uword d) { return blocks[i * (p + 1) + d]; }
+  const arma::mat &block(arma::uword i, arma::uword d) const
+  {
+    return blocks[i * (p + 1) + d];
+  }
+};
+
+/// Builds the band and the right hand side. The argument shapes are the public
+/// entry point's, and are documented there.
+///
+/// `trailing_column` asks for the state column past the end of the sample, and
+/// for the transition that produces it. `chan_jeliazkov_2009` takes it and drops
+/// it on the way out, which is the arrangement its callers were written against.
+/// It can be left out instead, and the columns that remain are then distributed
+/// exactly as they were with it: the term it adds is a normalised Gaussian
+/// density in that column whose mean is linear in the earlier ones, so
+/// integrating it out is an integral in that column alone and contributes
+/// nothing to what is left. Dropping it costs one block row rather than nothing,
+/// which is why the conditional entry point declines to build it -- there it
+/// would be a column of mixed width, half drawn and half data.
+BandSystem assemble_band(const arma::mat &y, const arma::mat &z,
+                         const arma::mat &sigma_u, const arma::mat &sigma_v,
+                         const arma::mat &B,
+                         const arma::vec &a_init, const arma::mat &P_init,
+                         const bool trailing_column)
+{
+  const arma::uword k = y.n_rows;
+  const arma::uword tt = y.n_cols;
+  const arma::uword m = z.n_cols;
+
+  // Checks
+  require(k > 0 && tt > 0, "'y' must have at least one row and one column, got " + dims(y));
+  require(m > 0, "'z' must have at least one column");
+  require(z.n_rows == k || z.n_rows == k * tt,
+          "'z' must have " + std::to_string(k) + " rows to measure every period, or " +
+              std::to_string(k * tt) + " to give one block per period, got " +
+              std::to_string(z.n_rows));
+  // The order of the transition is read off the width of B: p coefficient
+  // matrices side by side. One of them is the first order case.
+  require(B.n_cols > 0 && B.n_cols % m == 0,
+          "'B' must have a multiple of " + std::to_string(m) + " columns, one block per lag, got " +
+              std::to_string(B.n_cols));
+  const arma::uword p = B.n_cols / m;
+
+  // The state columns the system covers: one per period, and one more past the
+  // end of the sample where the caller asked for it.
+  const arma::uword n = trailing_column ? tt + 1 : tt;
+  require(n >= p, "a transition of order " + std::to_string(p) + " needs at least that many "
+                  "state columns, and " + std::to_string(tt) + " periods give " +
+                  std::to_string(n));
+
+  require(a_init.n_elem == p * m, "'a_init' must have " + std::to_string(p * m) +
+                                      " elements, one per state the prior covers, got " +
+                                      std::to_string(a_init.n_elem));
+  require(P_init.n_rows == p * m && P_init.n_cols == p * m,
+          "'P_init' must be " + std::to_string(p * m) + "x" + std::to_string(p * m) + ", got " +
+              dims(P_init));
+  require(all_finite(y), "'y' contains NaN or infinite values");
+  require(all_finite(z), "'z' contains NaN or infinite values");
+  require(all_finite(a_init), "'a_init' contains NaN or infinite values");
+
+  // Each of the four may arrive as one matrix that holds for every period, or
+  // as a stack of one per period. A stride of zero is what lets the body be
+  // written once, and it is also what lets a constant argument be inverted once
+  // rather than T times -- the same arrangement `kalman_durbin_koopman_2002`
+  // uses, for the same reason.
+  const arma::uword z_stride = (z.n_rows == k) ? 0 : k;
+  const arma::uword u_stride = (sigma_u.n_rows == k) ? 0 : k;
+  const arma::uword v_stride = (sigma_v.n_rows == m) ? 0 : m;
+  const arma::uword b_stride = (B.n_rows == m) ? 0 : m;
+
+  require(u_stride == 0 || sigma_u.n_rows == k * tt,
+          "'sigma_u' must be " + std::to_string(k) + "x" + std::to_string(k) + " or " +
+              std::to_string(k * tt) + "x" + std::to_string(k) + ", got " + dims(sigma_u));
+  require(v_stride == 0 || sigma_v.n_rows == m * tt,
+          "'sigma_v' must be " + std::to_string(m) + "x" + std::to_string(m) + " or " +
+              std::to_string(m * tt) + "x" + std::to_string(m) + ", got " + dims(sigma_v));
+  require(b_stride == 0 || B.n_rows == m * tt,
+          "'B' must have " + std::to_string(m) + " or " + std::to_string(m * tt) +
+              " rows, got " + std::to_string(B.n_rows));
+  require(sigma_u.n_cols == k, "'sigma_u' must have " + std::to_string(k) + " columns, got " +
+                                   std::to_string(sigma_u.n_cols));
+  require(sigma_v.n_cols == m, "'sigma_v' must have " + std::to_string(m) + " columns, got " +
+                                   std::to_string(sigma_v.n_cols));
+
+  // A constant covariance is inverted here, once. A time varying one is
+  // inverted per period below, as it must be.
+  arma::mat u_prec, v_prec;
+  if (u_stride == 0) { u_prec = precision_of(sigma_u, "'sigma_u'"); }
+  if (v_stride == 0) { v_prec = precision_of(sigma_v, "'sigma_v'"); }
+
+  const arma::mat p_init_prec = precision_of(P_init, "'P_init'");
+
+  // Every time varying parameter model in this library follows a random walk, so
+  // B is the identity and both B'Sigma_v^-1 B and B'Sigma_v^-1 are Sigma_v^-1.
+  // Tested once here, because otherwise they are two M x M x M products per
+  // period spent multiplying by one -- which at M = 45 is as much arithmetic as
+  // the factorisation itself.
+  const bool b_is_identity =
+      p == 1 && b_stride == 0 &&
+      arma::approx_equal(B, arma::eye<arma::mat>(m, m), "absdiff", 0.0);
+
+  // The band, upper triangle only, since K is symmetric: `block(i, d)` is the
+  // M x M block at row i and column i + d, for d = 0 ... p. Overwritten by the
+  // Cholesky factor in place, which has the same shape, so the whole draw holds
+  // (T+1)(p+1) matrices of M x M and the T(T+1)M^2 matrix never exists.
+  BandSystem sys;
+  sys.m = m;
+  sys.n = n;
+  sys.p = p;
+  sys.blocks.assign(n * (p + 1), arma::zeros<arma::mat>(m, m));
+  sys.rhs = arma::mat(m, n, arma::fill::zeros);
+
+  const auto block = [&sys](arma::uword i, arma::uword d) -> arma::mat & {
+    return sys.block(i, d);
+  };
+  arma::mat &rhs = sys.rhs;
+
+  // The prior, over the first p states jointly. For p = 1 this is one block.
+  for (arma::uword i = 0; i < p; i++) {
+    for (arma::uword j = i; j < p; j++) {
+      block(i, j - i) +=
+          p_init_prec.submat(i * m, j * m, (i + 1) * m - 1, (j + 1) * m - 1);
+    }
+    rhs.col(i) += p_init_prec.rows(i * m, (i + 1) * m - 1) * a_init;
+  }
+
+  // The measurements. Period t loads on state column t alone, so this reaches
+  // the main diagonal only, whatever p is.
+  //
+  // When neither the regressors nor the error covariance move with time, both
+  // Z'U^-1 and Z'U^-1 Z are the same in every period, so they are formed once
+  // outside the loop and the body is two additions. That is the case a dynamic
+  // factor model is in -- Z is its loading matrix -- and there K is large by
+  // design, which makes the T copies of a K x M x M product the dominant cost of
+  // the assembly rather than a detail.
+  const bool measurement_is_constant = z_stride == 0 && u_stride == 0;
+  arma::mat zu, zuz;
+  if (measurement_is_constant) {
+    zu = z.t() * u_prec;
+    zuz = zu * z;
+  }
+
+  for (arma::uword t = 0; t < tt; t++) {
+    if (!measurement_is_constant) {
+      if (u_stride != 0) {
+        u_prec = precision_of(sigma_u.rows(t * u_stride, t * u_stride + k - 1), "'sigma_u'");
+      }
+      const arma::mat Z_t = (z_stride == 0) ? z : z.rows(t * k, (t + 1) * k - 1);
+      zu = Z_t.t() * u_prec;
+      zuz = zu * Z_t;
+    }
+    block(t, 0) += zuz;
+    rhs.col(t) += zu * y.col(t);
+  }
+
+  // The transitions. The one producing state t is indexed t - 1, and exists for
+  // t = p ... n - 1 -- the first p states are the prior's, not any transition's,
+  // and the last one exists only where the trailing column was asked for.
+  //
+  // Writing C_0 = I and C_j = -A_j, the residual is sum_a C_a s_{t-a} and its
+  // quadratic form puts C_a' V C_b in block (t-a, t-b). Only a >= b is stored,
+  // that being the upper triangle, and the rest is its transpose.
+  for (arma::uword t = p; t < n; t++) {
+    const arma::uword bi = (t - 1) * b_stride;
+    const arma::uword vi = (t - 1) * v_stride;
+    if (v_stride != 0) {
+      v_prec = precision_of(sigma_v.rows(vi, vi + m - 1), "'sigma_v'");
+    }
+
+    block(t, 0) += v_prec; // a = b = 0
+
+    if (b_is_identity) {
+      // The random walk, spelled out: A_1 = I makes both products below the
+      // identity's, and skipping them is worth about a tenth of the assembly.
+      block(t - 1, 1) += -v_prec;
+      block(t - 1, 0) += v_prec;
+      continue;
+    }
+
+    const arma::mat B_t = B.rows(bi, bi + m - 1);
+    for (arma::uword j = 1; j <= p; j++) {
+      const arma::mat aj = B_t.cols((j - 1) * m, j * m - 1);
+      const arma::mat ajv = aj.t() * v_prec;
+
+      // a = j, b = 0: block (t - j, t).
+      block(t - j, j) += -ajv;
+
+      // a = j, b = l, keeping a >= b so that t - a <= t - b.
+      for (arma::uword l = 1; l <= j; l++) {
+        block(t - j, j - l) += ajv * B_t.cols((l - 1) * m, l * m - 1);
+      }
+    }
+  }
+
+  return sys;
+}
+
+/// The system for the leading `M - R` elements of every state column, given that
+/// the trailing R of them are data.
+///
+/// Conditioning a Gaussian on part of itself is a statement about the precision
+/// and nothing else: partitioning K into the free rows F and the known rows Y,
+///
+///     K_FF f = b_F - K_FY y,
+///
+/// which is the same band one block size narrower. It stays banded of the same
+/// bandwidth because the known positions are the same rows of every block, so
+/// selecting them takes a sub-block out of each rather than reordering
+/// anything, and it stays positive definite because a principal submatrix of a
+/// positive definite matrix is.
+///
+/// Two contributions reach the right hand side from each stored block, and the
+/// second is the one that is easy to leave out. `block(i, d)` is K_{i,i+d}, so
+/// its free-by-known corner couples column i's free rows with column i + d's
+/// data; and the same block *transposed* is K_{i+d,i}, whose free-by-known
+/// corner couples column i + d's free rows with column i's data. Only the upper
+/// triangle is stored, so the second has to be read off the first. The diagonal
+/// block is symmetric and is its own transpose, so its cross term is counted
+/// once.
+///
+/// `known` is R x N, one column per state column, in the same order the state
+/// carries them: the trailing R elements, not an arbitrary selection. That is
+/// what a factor augmented VAR has -- [f_t; y_t], the unobserved factors first
+/// -- and it is what keeps this a sub-block extraction rather than an index map.
+BandSystem conditioned_on(const BandSystem &joint, const arma::mat &known)
+{
+  const arma::uword n_known = known.n_rows;
+  const arma::uword n_free = joint.m - n_known;
+  const arma::uword last = joint.m - 1;
+
+  BandSystem out;
+  out.m = n_free;
+  out.n = joint.n;
+  out.p = joint.p;
+  out.blocks.assign(out.n * (out.p + 1), arma::zeros<arma::mat>(n_free, n_free));
+  out.rhs = joint.rhs.head_rows(n_free);
+
+  for (arma::uword i = 0; i < joint.n; i++) {
+    for (arma::uword d = 0; d <= joint.p && i + d < joint.n; d++) {
+      const arma::mat &full = joint.block(i, d);
+      out.block(i, d) = full.submat(0, 0, n_free - 1, n_free - 1);
+
+      if (n_known == 0) {
+        continue;
+      }
+
+      // K_{i,i+d}, the free rows of column i against the data of column i + d.
+      out.rhs.col(i) -= full.submat(0, n_free, n_free - 1, last) * known.col(i + d);
+
+      // K_{i+d,i} = K_{i,i+d}', the free rows of column i + d against the data
+      // of column i. The diagonal block is symmetric and was counted above.
+      if (d > 0) {
+        out.rhs.col(i + d) -= full.submat(n_free, 0, last, n_free - 1).t() * known.col(i);
+      }
+    }
+  }
+
+  return out;
+}
+
+/// Factorises the band in place and draws the path it describes, M x N.
+arma::mat draw_from_band(BandSystem &sys)
+{
+  const arma::uword m = sys.m;
+  const arma::uword n = sys.n;
+  const arma::uword p = sys.p;
+
+  const auto block = [&sys](arma::uword i, arma::uword d) -> arma::mat & {
+    return sys.block(i, d);
+  };
+  const arma::mat &rhs = sys.rhs;
+
+  // Block Cholesky, K = R'R with R block upper bidiagonal: R_i on the diagonal
+  // and S_i above it, from
+  //
+  //   R_0'R_0 = D_0,   R_i'S_i = U_i,   R_{i+1}'R_{i+1} = D_{i+1} - S_i'S_i,
+  //
+  // one sweep, each step a dense M x M factorisation or triangular solve. This
+  // is the whole reason the algorithm is worth having: the same posterior as a
+  // T(T+1)M^2 dense factorisation, at O(T M^3).
+  //
+  // K is positive definite by construction -- a sum of a positive definite
+  // prior precision and positive semidefinite quadratic forms -- so a failure
+  // means a conditioning value has already degenerated.
+  //
+  // Written out as it stands rather than in terms of the structure the blocks
+  // often have, because the structured spelling was tried and measured slower.
+  // With a random walk over a diagonal state covariance -- every time varying
+  // parameter model here -- U_i is diagonal and the Schur complement needs no S:
+  //
+  //   S_i'S_i = U_i' (R_i'R_i)^-1 U_i = Lam_i D_i^-1 Lam_i,
+  //
+  // a symmetric inverse scaled by a vector either side, which on paper replaces
+  // a triangular solve with M right hand sides and a full M x M x M product by
+  // M^2 work. On this machine it came out 15 to 30% *slower* at every size
+  // measured, because `inv_sympd` factorises the block a second time and the
+  // inverse it then computes is a poorer LAPACK kernel than the product it
+  // replaced -- fewer flops at a worse rate. The dense spelling below hands the
+  // largest term to `gemm`, which is the fastest kernel available, and that wins.
+  // From (R'R)_{i,j} = sum_k R_{k,i}' R_{k,j}, where R_{k,i} is non-zero only for
+  // i - p <= k <= i, the k that contribute to block (i, j) run from j - p to i.
+  // Splitting off k = i,
+  //
+  //   R_{i,i}' R_{i,j} = K_{i,j} - sum_{k=j-p}^{i-1} R_{k,i}' R_{k,j},
+  //
+  // which is a Cholesky at j = i and a triangular solve above it. One sweep, and
+  // for p = 1 it is the bidiagonal recursion it generalises.
+  // The accumulation is done into the band itself rather than into a scratch
+  // matrix: block (i, d) holds K_{i,i+d} until step i consumes it, and is never
+  // read again afterwards, so subtracting in place costs nothing and saves an
+  // M x M copy per block -- which at M = 45 was a quarter of this loop.
+  for (arma::uword i = 0; i < n; i++) {
+    for (arma::uword d = 0; d <= p && i + d < n; d++) {
+      const arma::uword j = i + d;
+      for (arma::uword q = (j >= p) ? j - p : 0; q < i; q++) {
+        block(i, d) -= block(q, i - q).t() * block(q, j - q);
+      }
+
+      arma::mat r;
+      if (d == 0) {
+        if (!arma::chol(r, block(i, 0))) {
+          throw std::runtime_error("chan_jeliazkov_2009: the posterior precision of the state path "
+                                   "is not positive definite at period " + std::to_string(i));
+        }
+      } else if (!arma::solve(r, arma::trimatl(block(i, 0).t()), block(i, d),
+                              arma::solve_opts::fast)) {
+        throw std::runtime_error("chan_jeliazkov_2009: the Cholesky factor of the state path "
+                                 "precision is singular at period " + std::to_string(i));
+      }
+      block(i, d) = r;
+    }
+  }
+
+  // Forward substitution, R'f = b, and then the backward pass. The mean and the
+  // noise share it: R x = f + w solves both at once, because R m = f and
+  // R n = w make R(m + n) = f + w, and Cov(R^-1 w) = (R'R)^-1 = K^-1.
+  arma::mat f(m, n);
+  for (arma::uword i = 0; i < n; i++) {
+    arma::vec b = rhs.col(i);
+    for (arma::uword q = (i >= p) ? i - p : 0; q < i; q++) {
+      b -= block(q, i - q).t() * f.col(q);
+    }
+    arma::vec solved;
+    if (!arma::solve(solved, arma::trimatl(block(i, 0).t()), b, arma::solve_opts::fast)) {
+      throw std::runtime_error("chan_jeliazkov_2009: the state path posterior is singular at "
+                               "period " + std::to_string(i));
+    }
+    f.col(i) = solved;
+  }
+
+  arma::mat draw(m, n);
+  for (arma::uword i = n; i-- > 0;) {
+    arma::vec b = f.col(i) + arma::randn<arma::vec>(m);
+    for (arma::uword d = 1; d <= p && i + d < n; d++) {
+      b -= block(i, d) * draw.col(i + d);
+    }
+    arma::vec solved;
+    if (!arma::solve(solved, arma::trimatu(block(i, 0)), b, arma::solve_opts::fast)) {
+      throw std::runtime_error("chan_jeliazkov_2009: the state path posterior is singular at "
+                               "period " + std::to_string(i));
+    }
+    draw.col(i) = solved;
+  }
+
+  if (!all_finite(draw)) {
+    throw std::runtime_error("chan_jeliazkov_2009: the drawn state path is not finite");
+  }
+
+  return draw;
+}
+
+} // namespace
+
+/**
+ * @brief Draws the state path of a linear Gaussian state space model.
+ *
+ * For
+ * \f[
+ *   y_t = Z_t s_t + u_t, \qquad s_t = \sum_{j=1}^{p} A_{j,t} s_{t-j} + v_t,
+ * \f]
+ * with \f$u_t \sim N(0, \Sigma_{u,t})\f$, \f$v_t \sim N(0, \Sigma_{v,t})\f$ and
+ * the first p states drawn jointly from \f$N(a_{init}, P_{init})\f$, the whole
+ * path \f$s = (s_0', \dots, s_T')'\f$ is Gaussian, and its precision K is block
+ * banded of bandwidth p. Three things populate it, and nothing else does:
+ *
+ * - the prior, contributing \f$P_{init}^{-1}\f$ across the first p block rows
+ *   and columns, and \f$P_{init}^{-1}a_{init}\f$ to the first p blocks of b;
+ * - the measurement of period t, contributing
+ *   \f$Z_t'\Sigma_{u,t}^{-1}Z_t\f$ to block (t, t) and
+ *   \f$Z_t'\Sigma_{u,t}^{-1}y_t\f$ to block t of b -- one state per observation,
+ *   so this touches the diagonal only;
+ * - the transition producing state t, whose residual
+ *   \f$s_t - \sum_j A_{j,t} s_{t-j}\f$ contributes \f$C_a' \Sigma_{v,t}^{-1}
+ *   C_b\f$ to block (t-a, t-b) for a, b = 0 ... p, with \f$C_0 = I\f$ and
+ *   \f$C_j = -A_{j,t}\f$. Those indices span t-p to t, which is where the
+ *   bandwidth comes from: a first order transition couples neighbours, an order
+ *   p one couples p apart, and no arrangement of the arguments couples further.
+ *
+ * The mean is \f$K^{-1}b\f$. The Cholesky factor of a block banded matrix is
+ * block banded of the same width, so it comes out of one sweep over the periods
+ * whatever p is, and the T(T+1)M^2 matrix is never formed.
+ *
+ * Indexing follows `kalman_durbin_koopman_2002`: observation `i` is measured
+ * against state column `i`, and the transition producing column `t` is the one
+ * indexed `t - 1`. The last column has no observation of its own.
+ *
+ * @param y K x T matrix of observations, one period per column.
+ * @param z the regressors. Either one K x M matrix \f$Z\f$ that measures every
+ *   period -- which is what a dynamic factor model has, its loading matrix -- or
+ *   a KT x M stack of the T blocks \f$Z_t\f$. In the constant case
+ *   \f$Z'\Sigma_u^{-1}Z\f$ is the same block in every period and is formed once
+ *   rather than T times, which is the difference between O(T K M^2) and O(K M^2)
+ *   on the assembly; with many observed series that is the dominant cost.
+ * @param sigma_u the error covariance. Either one K x K matrix for every period,
+ *   or a KT x K stack of one per period.
+ * @param sigma_v the state innovation covariance. Either one M x M matrix for
+ *   every period, or an MT x M stack of one per period.
+ * @param B the transition, of order p. The p coefficient matrices side by side,
+ *   \f$[A_1 \; A_2 \; \dots \; A_p]\f$, so M x pM for a transition that holds
+ *   for every period or MT x pM for a stack of one per period. p is read off the
+ *   width, so an M x M argument is the first order case and everything below
+ *   reduces to it. A stacked argument's row block `t - 1` is the one that
+ *   produces column `t`; its leading `p - 1` row blocks are never read, since no
+ *   transition produces a column the prior already covers.
+ * @param a_init pM-vector, the prior mean of the first p states, in time order:
+ *   \f$(a_1', a_2', \dots, a_p')'\f$. For p = 1 this is the state the first
+ *   observation loads on.
+ * @param P_init pM x pM prior covariance of those first p states, jointly. Must
+ *   be positive definite; see the note on that below.
+ *
+ * @return M x (T+1) matrix of state draws. Column i is the state period i's
+ *   observation loads on, for i = 0 ... T-1 -- so the caller wants
+ *   `.cols(0, T - 1)`. Column 0 is *not* a state before the sample: it is
+ *   \f$a_1\f$, conditioned on every observation. Column T is the transition
+ *   applied once past the end, informed by no observation.
+ *
+ * @note `P_init` has to be invertible here, where `kalman_durbin_koopman_2002`
+ *   also accepts a singular one. A precision based sampler needs
+ *   \f$P_{init}^{-1}\f$, and the limiting case -- a state fixed at `a_init`
+ *   rather than merely tightly distributed around it -- is a different model,
+ *   one state block shorter. Use the simulation smoother for it, or a small
+ *   `P_init`.
+ *
+ * @throws std::invalid_argument if the dimensions of the arguments do not
+ *   describe a state space model, if any of them is not finite, or if `P_init`
+ *   or a covariance has no symmetric positive definite inverse. The message
+ *   names the argument.
+ * @throws std::runtime_error if the posterior precision turns out not to be
+ *   positive definite, or if the drawn path is not finite.
+ *
+ * @warning The draw depends on the global Armadillo random number generator.
+ *   Seed it with `arma::arma_rng::set_seed` for reproducible results.
+ */
+arma::mat chan_jeliazkov_2009(const arma::mat &y, const arma::mat &z,
+                              const arma::mat &sigma_u, const arma::mat &sigma_v,
+                              const arma::mat &B,
+                              const arma::vec &a_init, const arma::mat &P_init)
+{
+  BandSystem sys = assemble_band(y, z, sigma_u, sigma_v, B, a_init, P_init, true);
+  return draw_from_band(sys);
+}
+
+/**
+ * @brief Draws the unobserved part of a state path whose trailing elements are
+ *        data.
+ *
+ * The model is `chan_jeliazkov_2009`'s, with the state partitioned as
+ * \f$s_t = (f_t', y_t')'\f$ and \f$y_t\f$ observed. That is what a factor
+ * augmented VAR is: the transition is a VAR over the factors and the observed
+ * variables jointly, and only the factors are drawn. Every argument keeps the
+ * shape and the meaning it has there, `z` being the measurement against the
+ * *whole* state -- \f$[\Lambda^f \; \Lambda^y]\f$ -- rather than against the
+ * drawn part of it.
+ *
+ * The observed block needs no subtracting out of `y` beforehand. Its
+ * contribution to the measurement, \f$\Lambda^{f\prime}\Sigma_u^{-1}\Lambda^y
+ * y_t\f$, is one of the cross terms the conditioning removes, so passing the
+ * observations and the full loading matrix leaves exactly
+ * \f$\Lambda^{f\prime}\Sigma_u^{-1}(y_t - \Lambda^y y^{obs}_t)\f$ on the right
+ * hand side. Doing it by hand as well would subtract it twice.
+ *
+ * @param y as for `chan_jeliazkov_2009`: K x T observations, one period per
+ *   column.
+ * @param z as for `chan_jeliazkov_2009`, for the whole M-element state: one
+ *   K x M matrix, or a KT x M stack of one per period.
+ * @param sigma_u as for `chan_jeliazkov_2009`: one K x K error covariance, or a
+ *   KT x K stack.
+ * @param sigma_v as for `chan_jeliazkov_2009`, for the whole state: one M x M
+ *   innovation covariance, or an MT x M stack.
+ * @param B as for `chan_jeliazkov_2009`: the transition of the whole state,
+ *   M x pM or an MT x pM stack.
+ * @param a_init as for `chan_jeliazkov_2009`: the pM-vector prior mean of the
+ *   first p states.
+ * @param P_init as for `chan_jeliazkov_2009`: their pM x pM prior covariance.
+ * @param known R x T, the observed trailing R elements of every state column,
+ *   one period per column. R must be smaller than the state; R = 0 is allowed
+ *   and asks for nothing to be conditioned on.
+ *
+ * @return (M - R) x T. Unlike `chan_jeliazkov_2009` there is no trailing column
+ *   to drop: the state past the end of the sample is half data and half not, and
+ *   dropping it is exact, so it is never built. See `assemble_band`.
+ *
+ * @throws std::invalid_argument on everything `chan_jeliazkov_2009` rejects, and
+ *   additionally if `known` does not have one column per period or has as many
+ *   rows as the state has elements.
+ * @throws std::runtime_error under the same conditions.
+ *
+ * @warning The draw depends on the global Armadillo random number generator.
+ */
+arma::mat chan_jeliazkov_2009_conditional(const arma::mat &y, const arma::mat &z,
+                                          const arma::mat &sigma_u, const arma::mat &sigma_v,
+                                          const arma::mat &B,
+                                          const arma::vec &a_init, const arma::mat &P_init,
+                                          const arma::mat &known)
+{
+  const BandSystem joint = assemble_band(y, z, sigma_u, sigma_v, B, a_init, P_init, false);
+
+  require(known.n_rows < joint.m,
+          "'known' must have fewer rows than the " + std::to_string(joint.m) +
+              " elements of the state, so that something is left to draw, got " +
+              std::to_string(known.n_rows));
+  require(known.n_cols == joint.n || known.n_rows == 0,
+          "'known' must have " + std::to_string(joint.n) + " columns, one per period, got " +
+              std::to_string(known.n_cols));
+  require(all_finite(known), "'known' contains NaN or infinite values");
+
+  BandSystem conditional = conditioned_on(joint, known);
+  return draw_from_band(conditional);
+}
+
+/**
+ * @brief Draws a path from a block banded Gaussian posterior given by its
+ *        precision.
+ *
+ * The third entry point, and the second half of the other two on its own: the
+ * caller assembles \f$K\f$ and \f$b\f$, and this draws \f$x \sim N(K^{-1}b,
+ * K^{-1})\f$ by the same block Cholesky. It exists for a path whose posterior is
+ * block banded without being the posterior of a measurement and a transition
+ * in the form `chan_jeliazkov_2009` takes -- an unobserved components trend,
+ * whose cycle is a regression on the trend's own lags, is one: its precision is
+ * a sum of quadratic forms in several lags at once, which no choice of `z` and
+ * `B` there spells.
+ *
+ * @param blocks the upper triangle of K, N(bandwidth + 1) matrices of M x M:
+ *   position \f$i(\text{bandwidth} + 1) + d\f$ holds the block at row i and
+ *   column i + d. Diagonal blocks whole rather than as a triangle, and blocks
+ *   past the last column ignored. Taken by value, being factorised in place.
+ * @param rhs M x N, b one column per block.
+ * @param bandwidth how many block columns apart K reaches; zero for a block
+ *   diagonal K.
+ *
+ * @return M x N, one column per block.
+ *
+ * @throws std::invalid_argument if the blocks do not describe an N-column band
+ *   of M x M blocks or `rhs` is not finite.
+ * @throws std::runtime_error if K is not positive definite or the draw is not
+ *   finite.
+ *
+ * @warning The draw depends on the global Armadillo random number generator.
+ */
+arma::mat chan_jeliazkov_2009_precision(std::vector<arma::mat> blocks, const arma::mat &rhs,
+                                        const arma::uword bandwidth)
+{
+  const arma::uword m = rhs.n_rows;
+  const arma::uword n = rhs.n_cols;
+  require(m > 0 && n > 0, "'rhs' must have at least one row and one column, got " + dims(rhs));
+  require(all_finite(rhs), "'rhs' contains NaN or infinite values");
+  require(blocks.size() == n * (bandwidth + 1),
+          "'blocks' must hold " + std::to_string(n * (bandwidth + 1)) +
+              " blocks, bandwidth + 1 per column, got " + std::to_string(blocks.size()));
+  for (const arma::mat &b : blocks) {
+    require(b.n_rows == m && b.n_cols == m,
+            "every block must be " + std::to_string(m) + "x" + std::to_string(m) + ", got " +
+                dims(b));
+  }
+
+  BandSystem sys;
+  sys.m = m;
+  sys.n = n;
+  sys.p = bandwidth;
+  sys.blocks = std::move(blocks);
+  sys.rhs = rhs;
+  return draw_from_band(sys);
+}

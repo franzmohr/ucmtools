@@ -1,0 +1,74 @@
+Copyright and license status of the ucmtools sources
+====================================================
+
+The package as a whole is distributed under GPL (>= 2), as stated in
+DESCRIPTION. Unless listed below, every file is
+
+    Copyright (c) Franz X. Mohr
+    GPL (>= 2)
+
+The files listed below are copied from BayesTS
+(https://github.com/franzmohr/BayesTS) and carry that project's BSD
+3-Clause license, recorded in each file as an SPDX header. The copyright
+holder is the same person, and BSD-3-Clause is compatible with GPL (>= 2),
+so the combined work is distributed under GPL (>= 2); the notice below
+satisfies the attribution the BSD license asks for. src/core/VENDORED.md
+documents which files were modified on the way in and why.
+
+BSD 3-Clause portion
+--------------------
+
+    Copyright (c) 2026 Franz X. Mohr
+    SPDX-License-Identifier: BSD-3-Clause
+
+    inst/include/bayests/arma.h
+    inst/include/bayests/data.h
+    inst/include/bayests/inputs.h
+    inst/include/bayests/priors.h
+    inst/include/bayests/reporter.h
+    inst/include/bayests/results.h
+    inst/include/bayests/spec.h
+    inst/include/bayests/uc_normal_gamma.h
+    inst/include/bayests/uc_normal_skew.h
+    inst/include/bayests/uc_normal_stochvol.h
+    inst/include/bayests/uc_normal_wishart.h
+    src/core/algorithms/chan_jeliazkov_2009.cpp
+    src/core/algorithms/chan_jeliazkov_2009.h
+    src/core/algorithms/constrained_var_path.cpp
+    src/core/algorithms/constrained_var_path.h
+    src/core/algorithms/gig_hormann_leydold_2014.cpp
+    src/core/algorithms/gig_hormann_leydold_2014.h
+    src/core/algorithms/kalman_durbin_koopman_2002.cpp
+    src/core/algorithms/kalman_durbin_koopman_2002.h
+    src/core/algorithms/stochvol_mixture.h
+    src/core/algorithms/stochvol_ocsn_2007.cpp
+    src/core/algorithms/stochvol_ocsn_2007.h
+    src/core/algorithms/triangular_packing.h
+    src/core/algorithms/truncated_normal.cpp
+    src/core/algorithms/truncated_normal.h
+    src/core/algorithms/wishart.cpp
+    src/core/algorithms/wishart.h
+    src/core/inputs.cpp
+    src/core/models/completion_support.h
+    src/core/models/constraint_support.h
+    src/core/models/forecast_states.h
+    src/core/models/model_support.h
+    src/core/models/noncentred_support.h
+    src/core/models/predictive_score.h
+    src/core/models/shrinkage_support.h
+    src/core/models/steady_state_support.h
+    src/core/models/uc_constant_support.h
+    src/core/models/uc_normal_gamma.cpp
+    src/core/models/uc_normal_skew.cpp
+    src/core/models/uc_normal_stochvol.cpp
+    src/core/models/uc_normal_wishart.cpp
+    src/core/models/uc_skew_support.h
+    src/core/models/uc_support.h
+    src/core/spec.cpp
+
+Data
+----
+
+data/at_gdp.rda is taken from data set at_macrodata of the R package
+bvartools (same author, GPL (>= 2)), which compiles it from the GVAR database
+of Mohaddes and Raissi (2024); data-raw/at_gdp.R records how.

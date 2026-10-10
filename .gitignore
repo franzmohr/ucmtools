@@ -1,0 +1,17 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+inst/doc
+
+# Compiled objects. src/core/ is vendored source, but its build products are no
+# more tracked than the top level's.
+*.o
+*.so
+*.dll
+*.dylib
+src/*.dSYM
+
+# R CMD build / check output
+/*.tar.gz
+/*.Rcheck/

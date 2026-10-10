@@ -1,0 +1,159 @@
+// SPDX-License-Identifier: BSD-3-Clause
+// Copyright (c) 2026 Franz X. Mohr
+
+#ifndef BAYESTS_DATA_H
+#define BAYESTS_DATA_H
+
+#include "bayests/arma.h"
+
+namespace bayests
+{
+
+/// What was observed of a panel that is not observed whole: the basis of
+/// mixed-frequency and missing-data estimation.
+///
+/// Every observation is one linear constraint on the panel,
+///
+///     value[r] = sum over entries e of row r:  weight[e] * y(period[e], variable[e])
+///
+/// holding exactly where `group[r]` is zero (a hard constraint) and up to a
+/// normal error whose variance is shared by every row of group g where it is
+/// g > 0 (a soft one). A single observed value is one entry of weight one; a
+/// quarterly figure of a monthly model is one row reaching over the months it
+/// aggregates; a national total is one row across the regions it sums. Which
+/// frequency a series has is nothing the samplers are told: it is only which
+/// rows the host wrote, so a varying number of weeks per month or days per
+/// month costs nothing extra.
+///
+/// Two parts of different lengths. `value` and `group` have one element per
+/// row. `row`, `period`, `variable` and `weight` have one element per entry, a
+/// sparse triplet form of the weight matrix; `row` says which row an entry
+/// belongs to. All indices are zero-based here and one-based in the file.
+///
+/// Empty in a panel observed whole, which is every file that does not carry
+/// them, and then nothing here changes what a sampler does.
+struct Constraints
+{
+    arma::vec value;
+    arma::uvec group;
+
+    arma::uvec row;
+    arma::uvec period;
+    arma::uvec variable;
+    arma::vec weight;
+
+    /// No rows: the panel is observed whole.
+    bool empty() const { return value.n_elem == 0 && row.n_elem == 0; }
+};
+
+/// The sample the model is estimated on.
+struct TrainData
+{
+    /// Endogenous observations, one row per period and one column per
+    /// variable. The samplers work with the stacked form vec(y'), so the
+    /// column ordering is what fixes which coefficient in `a` belongs to which
+    /// variable.
+    ///
+    /// A single row or a single column holding the already-stacked series is
+    /// read the same way, which is how the HDF5 files store it.
+    arma::mat y;
+
+    /// Observations of the error correction term.
+    arma::mat w;
+
+    /// Regressors, (tt * k) rows by nparams columns, laid out to multiply the
+    /// stacked response directly. Empty when the model has no regressors at
+    /// all -- that is the switch the samplers test, not a separate flag.
+    arma::mat z;
+
+    /// The same regressors in the compact layout: one row per period and one
+    /// column per regressor, so a coefficient matrix is k x n_x rather than a
+    /// vector of length k * n_x.
+    ///
+    /// `z` is this kroneckered up with I_k, which is what lets the SUR samplers
+    /// treat a multivariate model as one long regression -- at the price of a
+    /// (tt k) x (k n_x) matrix and a Gram product k^3 times the size of this
+    /// one's. A sampler reads whichever of the two it is written against and
+    /// leaves the other empty; VecKlgs2010 is the one that reads this.
+    arma::mat x;
+
+    /// The observed factors of a factor augmented VAR, tt x n_obs_factors, one
+    /// period per row. Empty for every other model.
+    ///
+    /// A member of its own rather than a reuse of `x`, which is the compact
+    /// regressor layout and means something else. These are not regressors: they
+    /// are the observed half of the state vector, they appear on the left of the
+    /// transition as well as the right, and the model's own dynamics run over
+    /// them. Handing them over as `x` would read as "a FAVAR is a regression
+    /// with these on the right", which is the one thing it is not.
+    arma::mat f_obs;
+
+    /// What was observed of `y`, where it was not observed whole: periods count
+    /// the rows of the sample, variables its columns. Empty for a complete
+    /// panel. No algorithm reads it yet, and every one refuses a file that
+    /// carries it rather than estimate a model from the placeholders standing
+    /// in for what was not observed.
+    Constraints constraints;
+
+    /// Number of periods implied by `y` for a model with `k` variables.
+    arma::uword periods(int k) const { return y.n_elem / static_cast<arma::uword>(k); }
+
+    /// Number of coefficients in `a`.
+    arma::uword nparams() const { return z.n_cols; }
+};
+
+/// The regressors the forecast is produced from.
+struct ForecastData
+{
+    /// h rows by VarSpec::n_x() columns, one period per row -- the compact
+    /// layout TrainData::x is written in, not the SUR one TrainData::z uses.
+    /// Lagged endogenous blocks are overwritten as the path is simulated, so
+    /// only the deterministic and exogenous columns have to be filled in by the
+    /// caller.
+    ///
+    /// A forecast is one k x n_x() coefficient matrix against one regressor
+    /// column per period, so the SUR spelling of it -- kron(x, I_k), at k times
+    /// the rows and k times the columns -- carries no information this does not
+    /// and costs k^2 the memory. It matters most where k is large: a 174
+    /// variable global VAR over twelve periods is 17 KB here against half a
+    /// gigabyte there, and every multiplication the wide form adds is against a
+    /// structural zero.
+    arma::mat x;
+
+    /// What the forecast is conditioned on: a scenario, in the form of
+    /// TrainData::constraints, periods counting the horizon with the first
+    /// period ahead zero. Not observations -- nothing here was realised -- but
+    /// assumptions, so it is read only by the forecast and never scored against.
+    /// Empty for an unconditional forecast.
+    Constraints constraints;
+};
+
+/// What the forecast horizon turned out to be, where the file carries it.
+///
+/// The counterpart of TrainData::y over the periods a forecast covers: one row
+/// per period, one column per variable, in the same order. It is not a sample
+/// anything is estimated on -- no sampler reads it -- but the observations a
+/// forecast is scored against, and it lives in the model file so that a window
+/// of an expanding window exercise carries what it is to be judged by. Scoring
+/// a folder of them is then one file at a time, rather than the caller holding
+/// the next window in memory to supply the observation this one predicted.
+///
+/// Empty where the file has none, which is every file that is a forecast rather
+/// than a forecast being scored. Shorter than the horizon where the sample ran
+/// out before the horizon did: the last windows of an expanding window are
+/// exactly that, and the periods that are there are the ones that can be
+/// scored.
+struct TestData
+{
+    arma::mat y;
+
+    /// What was realised of `y` where the horizon was not observed whole, in
+    /// the same form as TrainData::constraints: periods count the rows of `y`,
+    /// the first period of the horizon being zero. Empty when `y` is realised
+    /// whole.
+    Constraints constraints;
+};
+
+} // namespace bayests
+
+#endif // BAYESTS_DATA_H

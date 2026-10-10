@@ -1,0 +1,1851 @@
+// SPDX-License-Identifier: BSD-3-Clause
+// Copyright (c) 2026 Franz X. Mohr
+
+#ifndef BAYESTS_INPUTS_H
+#define BAYESTS_INPUTS_H
+
+#include <optional>
+
+#include "bayests/data.h"
+#include "bayests/priors.h"
+#include "bayests/spec.h"
+
+namespace bayests
+{
+
+/// Where the chain starts.
+struct VarNormalWishartInitial
+{
+    arma::vec a;            ///< Coefficients. Ignored when there are no regressors.
+    arma::vec a_lambda;     ///< Inclusion indicators. Ignored without variable selection.
+    arma::mat u_sigma_inv;  ///< k x k error precision.
+    /// The error precision of each soft group of TrainData::constraints, group g
+    /// at position g - 1. Empty when no row is soft.
+    arma::vec constraints_inv;
+    /// The starting group scales and, under a horseshoe or a normal-gamma
+    /// prior, local scales of the adaptive prior on `a` (VarSpec::shrinkage).
+    /// Empty starts them at one.
+    arma::vec a_shrinkage;
+    arma::vec a_local;
+    /// The starting theta_g of a normal-gamma prior that draws it, one per
+    /// group. Empty starts each at its prior mean, 1 / theta_rate_g.
+    arma::vec a_theta;
+    /// The unconditional mean the chain starts from under VarSpec::steady_state.
+    arma::vec mu;
+};
+
+/// The complete argument of the VarNormalWishart sampler.
+///
+/// This is the contract every host fills in: the HDF5 reader builds one out of
+/// a file, an R binding builds one out of an S4 object, and neither of them
+/// appears anywhere in the numeric code. Adding a field here is how a new
+/// input reaches the sampler; there is no other channel.
+struct VarNormalWishartInput
+{
+    VarSpec spec;
+    TrainData train;
+    ForecastData forecast; ///< `x` empty when no forecast was requested.
+    TestData test; ///< `y` empty unless the file carries realised values.
+
+    NormalPrior a_prior;          ///< Unused when there are no regressors.
+    WishartPrior u_sigma_prior;
+    VarSelPrior varsel_prior;     ///< Unused when spec.varsel is none.
+    /// A gamma prior on the error precision of each soft group of
+    /// TrainData::constraints, one shape and one rate per group. Unused when
+    /// no row is soft.
+    GammaPrior constraints_prior;
+
+    /// The groups and hyperparameters of VarSpec::shrinkage on `a`. Unused
+    /// without it.
+    ShrinkagePrior a_shrinkage_prior;
+
+    /// The normal prior on the unconditional mean under VarSpec::steady_state:
+    /// a mean of k and a k x k precision. Unused without it.
+    NormalPrior mu_prior;
+
+    VarNormalWishartInitial initial;
+
+    /// Whether the model has coefficients to draw at all. Derived from the
+    /// data rather than declared, so it cannot disagree with `z`.
+    bool use_a() const { return train.nparams() > 0; }
+
+    /// Throws std::invalid_argument describing the first inconsistency it
+    /// finds. Called by the sampler before the first draw, so a host that
+    /// forgets to call it still gets the message rather than a crash a
+    /// thousand iterations in.
+    void validate() const;
+};
+
+/// Where the VarNormalGamma chain starts.
+struct VarNormalGammaInitial
+{
+    arma::vec a;           ///< Coefficients. Ignored when there are no regressors.
+    arma::vec a_lambda;    ///< Inclusion indicators. Ignored without variable selection.
+    arma::vec psi;         ///< n_psi free elements of the covariance block.
+    arma::vec psi_lambda;
+    arma::mat u_sigma_inv; ///< k x k error precision.
+    /// The error precision of each soft group of TrainData::constraints, group g
+    /// at position g - 1. Empty when no row is soft.
+    arma::vec constraints_inv;
+    /// The starting group scales and, under a horseshoe or a normal-gamma
+    /// prior, local scales of the adaptive prior on `a` (VarSpec::shrinkage).
+    /// Empty starts them at one.
+    arma::vec a_shrinkage;
+    arma::vec a_local;
+    /// The starting theta_g of a normal-gamma prior that draws it, one per
+    /// group. Empty starts each at its prior mean, 1 / theta_rate_g.
+    arma::vec a_theta;
+    /// The unconditional mean the chain starts from under VarSpec::steady_state.
+    arma::vec mu;
+};
+
+/// VAR with a normal prior on the coefficients and independent gamma priors on
+/// the error precisions, optionally with a constant covariance block.
+struct VarNormalGammaInput
+{
+    VarSpec spec;
+    TrainData train;
+    ForecastData forecast; ///< `x` empty when no forecast was requested.
+    TestData test; ///< `y` empty unless the file carries realised values.
+
+    NormalPrior a_prior;         ///< Unused when there are no regressors.
+    VarSelPrior a_varsel_prior;  ///< Unused when spec.varsel is none.
+
+    NormalPrior psi_prior;       ///< Unused without a covariance block.
+    VarSelPrior psi_varsel_prior;
+
+    /// Selection for the covariance block, when it is to differ from the
+    /// model's. Unset is not the same as VarSelection::none: unset means the
+    /// file or the host said nothing, and spec.varsel then governs both blocks,
+    /// which is what every file written before this was read has always meant.
+    /// Setting it to none is the way to say that the coefficients are selected
+    /// over and the covariances are not.
+    std::optional<VarSelection> psi_varsel;
+
+    GammaPrior u_sigma_prior;
+    /// A gamma prior on the error precision of each soft group of
+    /// TrainData::constraints, one shape and one rate per group. Unused when
+    /// no row is soft.
+    GammaPrior constraints_prior;
+
+    /// The groups and hyperparameters of VarSpec::shrinkage on `a`. Unused
+    /// without it.
+    ShrinkagePrior a_shrinkage_prior;
+
+    /// The normal prior on the unconditional mean under VarSpec::steady_state:
+    /// a mean of k and a k x k precision. Unused without it.
+    NormalPrior mu_prior;
+
+    VarNormalGammaInitial initial;
+
+    bool use_a() const { return train.nparams() > 0; }
+    bool use_psi() const { return spec.uses_covar(); }
+    bool uses_psi_varsel() const { return psi_selection() != VarSelection::none; }
+    /// The scheme the covariance block is actually drawn under.
+    VarSelection psi_selection() const { return psi_varsel.value_or(spec.varsel); }
+
+    void validate() const;
+};
+
+/// Where the VarNormalStochvol chain starts.
+struct VarNormalStochvolInitial
+{
+    arma::vec a;
+    arma::vec a_lambda;
+    arma::vec psi;
+    arma::vec psi_lambda;
+
+    arma::mat h;       ///< tt x k log-volatilities, one column per variable.
+    arma::vec h_init;  ///< k; the log-volatility before the first period.
+
+    /// k; variance of the log-volatility innovations. A state rather than a
+    /// prior -- the sampler redraws it every iteration -- even though the
+    /// files keep it next to the prior it is drawn under.
+    arma::vec h_sigma;
+    /// The error precision of each soft group of TrainData::constraints, group g
+    /// at position g - 1. Empty when no row is soft.
+    arma::vec constraints_inv;
+    /// The starting group scales and, under a horseshoe or a normal-gamma
+    /// prior, local scales of the adaptive prior on `a` (VarSpec::shrinkage).
+    /// Empty starts them at one.
+    arma::vec a_shrinkage;
+    arma::vec a_local;
+    /// The starting theta_g of a normal-gamma prior that draws it, one per
+    /// group. Empty starts each at its prior mean, 1 / theta_rate_g.
+    arma::vec a_theta;
+    /// The unconditional mean the chain starts from under VarSpec::steady_state.
+    arma::vec mu;
+};
+
+/// VAR with a normal prior on the coefficients and stochastic volatility in
+/// the errors, optionally with a covariance block.
+///
+/// Only BVS reaches this model; SSVS is not implemented for it.
+struct VarNormalStochvolInput
+{
+    VarSpec spec;
+    TrainData train;
+    ForecastData forecast;
+    TestData test; ///< `y` empty unless the file carries realised values.
+
+    NormalPrior a_prior;
+    VarSelPrior a_varsel_prior;
+
+    NormalPrior psi_prior;
+    VarSelPrior psi_varsel_prior;
+
+    /// Selection for the covariance block, when it is to differ from the
+    /// model's. Unset is not the same as VarSelection::none: unset means the
+    /// file or the host said nothing, and spec.varsel then governs both blocks,
+    /// which is what every file written before this was read has always meant.
+    /// Setting it to none is the way to say that the coefficients are selected
+    /// over and the covariances are not.
+    std::optional<VarSelection> psi_varsel;
+
+    StochvolPrior u_sigma_prior;
+
+    /// A gamma prior on the error precision of each soft group of
+    /// TrainData::constraints, one shape and one rate per group. Unused when
+    /// no row is soft.
+    GammaPrior constraints_prior;
+
+    /// The groups and hyperparameters of VarSpec::shrinkage on `a`. Unused
+    /// without it.
+    ShrinkagePrior a_shrinkage_prior;
+
+    /// The normal prior on the unconditional mean under VarSpec::steady_state:
+    /// a mean of k and a k x k precision. Unused without it.
+    NormalPrior mu_prior;
+
+    VarNormalStochvolInitial initial;
+
+    bool use_a() const { return train.nparams() > 0; }
+    bool use_psi() const { return spec.uses_covar(); }
+    bool uses_psi_varsel() const { return psi_selection() != VarSelection::none; }
+    /// The scheme the covariance block is actually drawn under.
+    VarSelection psi_selection() const { return psi_varsel.value_or(spec.varsel); }
+
+    void validate() const;
+};
+
+/// Where the VarNormalAld chain starts.
+///
+/// `w` is the latent scale of the asymmetric Laplace mixture, one per
+/// observation, and it is a state rather than data: the sampler redraws every
+/// element of it each sweep. It sits here rather than in the priors because a
+/// chain has to start somewhere, and a file that supplies it can resume one.
+struct VarNormalAldInitial
+{
+    arma::vec a;
+    arma::vec a_lambda;
+
+    arma::mat w;         ///< tt x k latent scales, one column per equation.
+    arma::vec u_scale;    ///< k; the scale of the asymmetric Laplace, one per equation.
+};
+
+/// VAR estimated at a conditional quantile, through the normal-exponential
+/// scale mixture representation of the asymmetric Laplace distribution.
+///
+/// For quantile q, with theta = (1 - 2q) / (q(1 - q)) and tau2 = 2 / (q(1 - q)),
+///
+///     y_it = x_t' a_i + theta w_it + e_it,  e_it ~ N(0, tau2 s_i w_it),
+///     w_it ~ Exp(1 / s_i),
+///
+/// so that conditional on the latent scales every equation is an ordinary
+/// weighted normal regression -- which is what makes this the stochastic
+/// volatility sampler with a different rule for where the per-period variance
+/// comes from, rather than a new kind of model.
+///
+/// Two things this model does not have. There is **no covariance block**: Psi is
+/// a triangular rotation of the errors, the equations are independent given w,
+/// and rotating them is what stops the estimand being a quantile. And there is
+/// **no forecast**: the h step quantile is not the quantile of the iterated one
+/// step quantiles, so validate() rejects a horizon rather than letting the
+/// front-end produce a number that cannot be read as one.
+///
+/// The asymmetric Laplace is a working likelihood, not a claim about the data.
+/// The posterior locates the quantile, but its spread is not calibrated without
+/// the adjustment of Yang, Wang and He (2016), which this does not apply.
+///
+/// Only BVS reaches this model; SSVS is not implemented for it.
+///
+/// Kozumi, H., & Kobayashi, G. (2011). Gibbs sampling methods for Bayesian
+/// quantile regression. Journal of Statistical Computation and Simulation,
+/// 81(11), 1565-1578.
+struct VarNormalAldInput
+{
+    VarSpec spec;
+    TrainData train;
+    ForecastData forecast; ///< Always empty: this model does not forecast.
+    TestData test; ///< `y` empty unless the file carries realised values.
+
+    NormalPrior a_prior;
+    VarSelPrior a_varsel_prior;
+
+    /// Inverse gamma on the scale of the asymmetric Laplace, one per equation.
+    GammaPrior u_scale_prior;
+
+    VarNormalAldInitial initial;
+
+    bool use_a() const { return train.nparams() > 0; }
+
+    void validate() const;
+};
+
+/// Where the VarTvpGamma chain starts.
+///
+/// The coefficients are paths rather than points, so most of this is a matrix
+/// where the constant-coefficient models hold a vector.
+struct VarTvpGammaInitial
+{
+    arma::mat a;           ///< nparams x tt.
+    arma::mat a_sigma_inv; ///< nparams x nparams; only the diagonal is read.
+    arma::vec a_init;      ///< nparams; the state before the first period.
+    arma::vec a_lambda;
+
+    arma::mat psi;           ///< n_psi x tt.
+    arma::mat psi_sigma_inv; ///< n_psi x n_psi; only the diagonal is read.
+    arma::vec psi_init;      ///< n_psi.
+    arma::vec psi_lambda;
+
+    arma::mat u_omega_inv; ///< k x k.
+    /// The error precision of each soft group of TrainData::constraints, group g
+    /// at position g - 1. Empty when no row is soft.
+    arma::vec constraints_inv;
+};
+
+/// VAR whose coefficients follow a random walk, with independent gamma priors
+/// on the error precisions and an optional time-varying covariance block.
+struct VarTvpGammaInput
+{
+    VarSpec spec;
+    TrainData train;
+    ForecastData forecast;
+    TestData test; ///< `y` empty unless the file carries realised values.
+
+    RandomWalkPrior a_prior;
+    VarSelPrior a_varsel_prior;
+
+    RandomWalkPrior psi_prior;
+    VarSelPrior psi_varsel_prior;
+
+    GammaPrior u_sigma_prior;
+
+    /// Selection for the covariance block, when it is to differ from the
+    /// model's. Unset is not the same as VarSelection::none: unset means the
+    /// file or the host said nothing, and spec.varsel then governs both blocks.
+    /// Setting it to none is how a file says that the coefficients are selected
+    /// over and the covariances are not.
+    std::optional<VarSelection> psi_varsel;
+
+    /// A gamma prior on the error precision of each soft group of
+    /// TrainData::constraints, one shape and one rate per group. Unused when
+    /// no row is soft.
+    GammaPrior constraints_prior;
+
+    VarTvpGammaInitial initial;
+
+    bool use_a() const { return train.nparams() > 0; }
+    bool use_psi() const { return spec.uses_covar(); }
+    bool uses_psi_varsel() const { return psi_selection() != VarSelection::none; }
+    /// The scheme the covariance block is actually drawn under.
+    VarSelection psi_selection() const { return psi_varsel.value_or(spec.varsel); }
+
+    void validate() const;
+};
+
+/// Where the VarTvpWishart chain starts.
+///
+/// The coefficients are paths rather than points, so most of this is a matrix
+/// where the constant-coefficient models hold a vector.
+struct VarTvpWishartInitial
+{
+    arma::mat a;           ///< nparams x tt.
+    arma::mat a_sigma_inv; ///< nparams x nparams; only the diagonal is read.
+    arma::vec a_init;      ///< nparams; the state before the first period.
+    arma::vec a_lambda;
+
+    arma::mat u_sigma_inv;  ///< k x k error precision.
+    /// The error precision of each soft group of TrainData::constraints, group g
+    /// at position g - 1. Empty when no row is soft.
+    arma::vec constraints_inv;
+};
+
+/// VAR whose coefficients follow a random walk, with a Wishart prior on the
+/// error precision. It carries no psi block: the error covariance is the
+/// Wishart precision alone.
+struct VarTvpWishartInput
+{
+    VarSpec spec;
+    TrainData train;
+    ForecastData forecast;
+    TestData test; ///< `y` empty unless the file carries realised values.
+
+    RandomWalkPrior a_prior;
+    VarSelPrior a_varsel_prior;
+    WishartPrior u_sigma_prior; 
+
+    /// A gamma prior on the error precision of each soft group of
+    /// TrainData::constraints, one shape and one rate per group. Unused when
+    /// no row is soft.
+    GammaPrior constraints_prior;
+
+    VarTvpWishartInitial initial;
+
+    bool use_a() const { return train.nparams() > 0; }
+
+    void validate() const;
+};
+
+/// Where the VarTvpStochvol chain starts.
+///
+/// Both halves of the model carry state: the coefficients are paths, as in
+/// VarTvpGamma, and the log-volatility is a path of its own, as in
+/// VarNormalStochvol.
+struct VarTvpStochvolInitial
+{
+    arma::mat a;           ///< nparams x tt.
+    arma::mat a_sigma_inv; ///< nparams x nparams; only the diagonal is read.
+    arma::vec a_init;      ///< nparams; the state before the first period.
+    arma::vec a_lambda;
+
+    arma::mat psi;           ///< n_psi x tt.
+    arma::mat psi_sigma_inv; ///< n_psi x n_psi; only the diagonal is read.
+    arma::vec psi_init;      ///< n_psi.
+    arma::vec psi_lambda;
+
+    arma::mat h;      ///< tt x k log-volatilities, one column per variable.
+    arma::vec h_init; ///< k; the log-volatility before the first period.
+
+    /// k; variance of the log-volatility innovations. A state rather than a
+    /// prior -- the sampler redraws it every iteration -- even though the
+    /// files keep it next to the prior it is drawn under.
+    arma::vec h_sigma;
+    /// The error precision of each soft group of TrainData::constraints, group g
+    /// at position g - 1. Empty when no row is soft.
+    arma::vec constraints_inv;
+};
+
+/// VAR whose coefficients follow a random walk, with stochastic volatility in
+/// the errors and an optional time-varying covariance block.
+///
+/// Only BVS reaches this model; SSVS is not implemented for it.
+struct VarTvpStochvolInput
+{
+    VarSpec spec;
+    TrainData train;
+    ForecastData forecast;
+    TestData test; ///< `y` empty unless the file carries realised values.
+
+    RandomWalkPrior a_prior;
+    VarSelPrior a_varsel_prior;
+
+    RandomWalkPrior psi_prior;
+    VarSelPrior psi_varsel_prior;
+
+    StochvolPrior u_sigma_prior;
+
+    /// Selection for the covariance block, when it is to differ from the
+    /// model's. Unset is not the same as VarSelection::none: unset means the
+    /// file or the host said nothing, and spec.varsel then governs both blocks.
+    /// Setting it to none is how a file says that the coefficients are selected
+    /// over and the covariances are not.
+    std::optional<VarSelection> psi_varsel;
+
+    /// A gamma prior on the error precision of each soft group of
+    /// TrainData::constraints, one shape and one rate per group. Unused when
+    /// no row is soft.
+    GammaPrior constraints_prior;
+
+    VarTvpStochvolInitial initial;
+
+    bool use_a() const { return train.nparams() > 0; }
+    bool use_psi() const { return spec.uses_covar(); }
+    bool uses_psi_varsel() const { return psi_selection() != VarSelection::none; }
+    /// The scheme the covariance block is actually drawn under.
+    VarSelection psi_selection() const { return psi_varsel.value_or(spec.varsel); }
+
+    void validate() const;
+};
+
+/// Where the VarTvpAld chain starts.
+///
+/// VarTvpStochvolInitial's coefficient half beside VarNormalAldInitial's error
+/// half: the coefficients are paths, and the scale of the asymmetric Laplace is
+/// a latent per observation.
+struct VarTvpAldInitial
+{
+    arma::mat a;           ///< nparams x tt.
+    arma::mat a_sigma_inv; ///< nparams x nparams; only the diagonal is read.
+    arma::vec a_init;      ///< nparams; the state before the first period.
+    arma::vec a_lambda;
+
+    arma::mat w;        ///< tt x k latent scales, one column per equation.
+    arma::vec u_scale;  ///< k; the scale of the asymmetric Laplace.
+};
+
+/// VAR estimated at a conditional quantile whose coefficients follow a random
+/// walk. VarNormalAld's every word applies, including the two things it does not
+/// have -- no covariance block and no forecast -- and the coefficients are drawn
+/// as whole paths with the simulation smoother, as in VarTvpStochvol.
+///
+/// What the drift buys here is the thing a constant-coefficient quantile model
+/// cannot say: that the *relationship* at the tail moved, rather than only the
+/// spread of the errors around a fixed one.
+struct VarTvpAldInput
+{
+    VarSpec spec;
+    TrainData train;
+    ForecastData forecast; ///< Always empty: this model does not forecast.
+    TestData test; ///< `y` empty unless the file carries realised values.
+
+    RandomWalkPrior a_prior;
+    VarSelPrior a_varsel_prior;
+
+    GammaPrior u_scale_prior;
+
+    VarTvpAldInitial initial;
+
+    bool use_a() const { return train.nparams() > 0; }
+
+    void validate() const;
+};
+
+/// Where the DfmNormalGamma chain starts.
+///
+/// The factor path is not among these: it is the first thing every draw
+/// produces, from the loadings and the two precisions, so there is nothing for a
+/// starting value to do.
+struct DfmNormalGammaInitial
+{
+    /// The `n_lambda` free loadings, in the order the sampler draws them --
+    /// row by row, and within a row left to right. See DfmNormalGammaInput.
+    arma::vec lambda;
+
+    /// vec([A_1 .. A_p]). Ignored when the factors have no dynamics.
+    arma::vec a;
+
+    /// k; the diagonal of the idiosyncratic precision. A vector rather than a
+    /// matrix because U is diagonal by assumption and nothing here would read
+    /// an off-diagonal element.
+    arma::vec u_sigma_inv;
+
+    /// n_factors; the diagonal of the factor innovation precision.
+    arma::vec v_sigma_inv;
+    /// vec(C), k x n with n = VarSpec::n: the coefficients of the deterministic
+    /// terms of the measurement, column by column. Empty for a model without
+    /// deterministic terms.
+    arma::vec c;
+
+};
+
+/// Dynamic factor model with a normal prior on the loadings and on the factor
+/// transition, and independent gamma priors on both error precisions.
+///
+///     x_t = Lambda f_t + C d_t + u_t,          u_t ~ N(0, U),  U diagonal,
+///     f_t = sum_{j=1..p} A_j f_{t-j} + v_t,    v_t ~ N(0, V),  V diagonal.
+///
+/// `train.y` holds the observed series, tt x k. The factors are the model's only
+/// regressors, so `z` and `w` are unused; `x` holds the `spec.n` deterministic
+/// terms d_t -- a constant, a trend, seasonal dummies -- tt x n, one period per
+/// row, and is empty for a model without them, whose C d_t term then drops out.
+/// The factors are deviations from C d_t, which is why the terms enter the
+/// measurement rather than the transition, and C does not drift in any of the
+/// four DFMs. The forecast is a simulation of the transition forward from the
+/// last drawn factors, so the only out-of-sample input it reads is
+/// `forecast.x`, the deterministic terms of the horizon, h x n; `spec.h` is the
+/// horizon. `c_prior` and `initial.c` are over vec(C), column by column.
+///
+/// Two orderings have to be agreed with the host and are the only ones that are
+/// not implied by a dimension:
+///
+///   - the free loadings, everywhere they appear as a vector -- `initial.lambda`
+///     and both halves of `lambda_prior` -- run row by row: row 1's single free
+///     element, then row 2's two, and so on, each row left to right. That is the
+///     order the equation-by-equation draw consumes them in, which is what makes
+///     a row's prior block contiguous. Note that the *posterior* is stored
+///     differently, as vec of the whole M x N matrix; see DfmNormalGammaDraws.
+///   - `a` is vec([A_1 .. A_p]) with the blocks side by side, so the first
+///     n_factors^2 elements are A_1 read column-wise.
+///
+/// Values of the factors before the sample are zero rather than drawn, which is
+/// what makes the first p periods' transitions well defined and is the
+/// convention bvartools' dfmpost() uses.
+struct DfmNormalGammaInput
+{
+    VarSpec spec;
+    TrainData train;
+    TestData test; ///< `y` empty unless the file carries realised values.
+    /// `x` holds the deterministic terms of the forecast horizon, h x n with
+    /// n = VarSpec::n, one period per row. Empty for a model without them.
+    ForecastData forecast;
+
+    NormalPrior lambda_prior;  ///< Over the free loadings, in the row-major order above.
+
+    /// Over vec(C), the k x n coefficients of the deterministic terms, column by
+    /// column. Unused when the model has none. Drawn row by row, so the
+    /// precision may not couple two rows of C.
+    NormalPrior c_prior;
+    NormalPrior a_prior;       ///< Unused when the factors have no dynamics.
+
+    GammaPrior u_sigma_prior;  ///< k independent priors on the idiosyncratic precisions.
+    GammaPrior v_sigma_prior;  ///< n_factors independent priors on the factor innovations.
+
+    DfmNormalGammaInitial initial;
+
+    /// Whether the factors carry dynamics to draw. A DFM of transition order
+    /// zero is a static factor model with serially independent factors, which
+    /// this sampler estimates -- it is not an error.
+    bool use_a() const { return spec.n_factor_a() > 0; }
+
+    /// Throws std::invalid_argument describing the first inconsistency it
+    /// finds. Called by the sampler before the first draw, so a host that
+    /// forgets to call it still gets the message rather than a crash a
+    /// thousand iterations in.
+    void validate() const;
+};
+
+/// Where the DfmNormalStochvol chain starts.
+///
+/// DfmNormalGammaInitial plus a log-volatility path for each of the two error
+/// terms, and minus the two precisions those paths replace. As there, the factor
+/// path itself is not here: it is the first thing every draw produces.
+struct DfmNormalStochvolInitial
+{
+    /// The `n_lambda` free loadings, row by row and within a row left to right.
+    /// See DfmNormalStochvolInput.
+    arma::vec lambda;
+
+    /// vec([A_1 .. A_p]). Ignored when the factors have no dynamics.
+    arma::vec a;
+
+    /// tt x k log-volatilities of the idiosyncratic errors, one column per
+    /// observed series.
+    arma::mat u_h;
+
+    /// k; the idiosyncratic log-volatility before the first period.
+    arma::vec u_h_init;
+
+    /// k; variance of the idiosyncratic log-volatility innovations. A state
+    /// rather than a prior -- the sampler redraws it every iteration -- even
+    /// though the files keep it next to the prior it is drawn under, which is
+    /// the convention VarNormalStochvolInitial already set.
+    arma::vec u_h_sigma;
+
+    /// tt x n_factors log-volatilities of the factor innovations.
+    arma::mat v_h;
+
+    /// n_factors; the factor-innovation log-volatility before the first period.
+    arma::vec v_h_init;
+
+    /// n_factors; variance of the factor-innovation log-volatility innovations.
+    arma::vec v_h_sigma;
+    /// vec(C), k x n with n = VarSpec::n: the coefficients of the deterministic
+    /// terms of the measurement, column by column. Empty for a model without
+    /// deterministic terms.
+    arma::vec c;
+
+};
+
+/// Dynamic factor model with a normal prior on the loadings and on the factor
+/// transition, and stochastic volatility in both error terms.
+///
+///     x_t = Lambda f_t + C d_t + u_t,          u_t ~ N(0, U_t),
+///     f_t = sum_{j=1..p} A_j f_{t-j} + v_t,    v_t ~ N(0, V_t),
+///
+/// with U_t = diag(exp(h^u_t)) and V_t = diag(exp(h^v_t)), and each element of
+/// both log-volatilities following a random walk of its own.
+///
+/// `Normal` names the coefficients, as it does in VarNormalStochvolInput against
+/// VarTvpStochvolInput: the loadings and the factor transition are constant and
+/// carry normal priors. Only the two error covariances move.
+///
+/// The two placements do different work and neither substitutes for the other.
+/// Volatility in `u_t` reweights the series that identify the factors, so a
+/// series that was noisy early and quiet later stops contributing on the same
+/// terms throughout, and a single wild observation is absorbed where it happened
+/// rather than dragged into the factor. Volatility in `v_t` is the common
+/// component's own, and it is what stops the k idiosyncratic variances from
+/// jointly absorbing a shock that every series felt at once -- the factor is
+/// otherwise flattest exactly when it should move most.
+///
+/// Everything DfmNormalGammaInput says about the data and the two orderings
+/// holds here unchanged: `train.y` is the data and `train.x` its deterministic
+/// terms, `forecast.x` theirs over the horizon, `spec.h` is the horizon, the
+/// free loadings run row by row, `a` is
+/// vec([A_1 .. A_p]) with the blocks side by side, and the factors before the
+/// sample are zero rather than drawn.
+struct DfmNormalStochvolInput
+{
+    VarSpec spec;
+    TrainData train;
+    TestData test; ///< `y` empty unless the file carries realised values.
+    /// `x` holds the deterministic terms of the forecast horizon, h x n with
+    /// n = VarSpec::n, one period per row. Empty for a model without them.
+    ForecastData forecast;
+
+    NormalPrior lambda_prior;  ///< Over the free loadings, in the row-major order above.
+
+    /// Over vec(C), the k x n coefficients of the deterministic terms, column by
+    /// column. Unused when the model has none. Drawn row by row, so the
+    /// precision may not couple two rows of C.
+    NormalPrior c_prior;
+    NormalPrior a_prior;       ///< Unused when the factors have no dynamics.
+
+    StochvolPrior u_sigma_prior;  ///< k idiosyncratic log-volatilities.
+    StochvolPrior v_sigma_prior;  ///< n_factors factor-innovation log-volatilities.
+
+    DfmNormalStochvolInitial initial;
+
+    /// Whether the factors carry dynamics to draw. A transition order of zero is
+    /// a static factor model with serially independent -- but still
+    /// heteroskedastic -- factors, which this sampler estimates.
+    bool use_a() const { return spec.n_factor_a() > 0; }
+
+    void validate() const;
+};
+
+/// Where the DfmTvpGamma chain starts.
+///
+/// DfmNormalGammaInitial with the two coefficient blocks widened from a point to
+/// a path, and each of them carrying the two extra pieces every random walk here
+/// needs: the precision of its innovations and the state of the period before
+/// the sample. The factor path is still not among these -- it is the first thing
+/// every draw produces.
+struct DfmTvpGammaInitial
+{
+    /// n_lambda x tt. Each column holds the free loadings of one period, row by
+    /// row and within a row left to right -- the same ordering
+    /// DfmNormalGammaInitial::lambda uses for its single vector, repeated once
+    /// per period.
+    arma::mat lambda;
+
+    /// n_lambda x n_lambda; only the diagonal is read.
+    arma::mat lambda_sigma_inv;
+
+    /// n_lambda; the free loadings of the period before the sample.
+    arma::vec lambda_init;
+
+    /// n_factor_a x tt, each column vec([A_1 .. A_p]) of one period. Ignored
+    /// when the factors have no dynamics.
+    arma::mat a;
+
+    /// n_factor_a x n_factor_a; only the diagonal is read.
+    arma::mat a_sigma_inv;
+
+    /// n_factor_a; the transition of the period before the sample.
+    arma::vec a_init;
+
+    /// k; the diagonal of the idiosyncratic precision, which does not move.
+    arma::vec u_sigma_inv;
+
+    /// n_factors; the diagonal of the factor innovation precision.
+    arma::vec v_sigma_inv;
+    /// vec(C), k x n with n = VarSpec::n: the coefficients of the deterministic
+    /// terms of the measurement, column by column. Empty for a model without
+    /// deterministic terms.
+    arma::vec c;
+
+};
+
+/// Dynamic factor model whose loadings and factor transition follow random
+/// walks, with independent gamma priors on both error precisions.
+///
+///     x_t = Lambda_t f_t + C d_t + u_t,          u_t ~ N(0, U),  U diagonal,
+///     f_t = sum_{j=1..p} A_{j,t} f_{t-j} + v_t,  v_t ~ N(0, V),  V diagonal,
+///
+/// with every free element of Lambda and every element of [A_1 .. A_p] a random
+/// walk of its own. `Tvp` names the coefficients, exactly as it does in
+/// VarTvpGammaInput against VarNormalGammaInput, and it names *both* coefficient
+/// blocks: a model in which only the loadings drifted would be a different one,
+/// and is not what this is.
+///
+/// The identifying block of Lambda does not drift, because it is not drawn: the
+/// leading N x N block stays unit lower triangular in every period. Letting it
+/// move would leave the rotation and scale of the factors free to wander over
+/// the sample, and a loading path would then be a statement about the
+/// normalisation as much as about the exposure it is read as.
+///
+/// Everything DfmNormalGammaInput says about the data holds here unchanged:
+/// `train.y` holds the observed series and `train.x` their deterministic terms,
+/// `forecast.x` holds those over the horizon, `spec.h` is the horizon, the free
+/// loadings run row by row, `a` is vec([A_1 .. A_p]) with the blocks side by side, and the
+/// factors before the sample are zero rather than drawn.
+///
+/// Del Negro, M., & Otrok, C. (2008). Dynamic factor models with time-varying
+/// parameters: measuring changes in international business cycles. Federal
+/// Reserve Bank of New York Staff Report No. 326.
+struct DfmTvpGammaInput
+{
+    VarSpec spec;
+    TrainData train;
+    TestData test; ///< `y` empty unless the file carries realised values.
+    /// `x` holds the deterministic terms of the forecast horizon, h x n with
+    /// n = VarSpec::n, one period per row. Empty for a model without them.
+    ForecastData forecast;
+
+    /// The state equation of the free loadings, in the row-major order above.
+    RandomWalkPrior lambda_prior;
+
+    /// Over vec(C), the k x n coefficients of the deterministic terms, column by
+    /// column. Unused when the model has none. Drawn row by row, so the
+    /// precision may not couple two rows of C.
+    NormalPrior c_prior;
+
+    /// The state equation of the factor transition. Unused when the factors
+    /// have no dynamics.
+    RandomWalkPrior a_prior;
+
+    GammaPrior u_sigma_prior;  ///< k independent priors on the idiosyncratic precisions.
+    GammaPrior v_sigma_prior;  ///< n_factors independent priors on the factor innovations.
+
+    DfmTvpGammaInitial initial;
+
+    /// Whether the factors carry dynamics to draw. A transition of order zero is
+    /// a static factor model with serially independent factors, which this
+    /// sampler estimates -- there is then no transition path either, and the
+    /// model is a DFM with drifting loadings alone.
+    bool use_a() const { return spec.n_factor_a() > 0; }
+
+    void validate() const;
+};
+
+/// Where the DfmTvpStochvol chain starts.
+///
+/// DfmTvpGammaInitial with the two precisions replaced by a log-volatility path
+/// each -- which is exactly what DfmNormalStochvolInitial does to
+/// DfmNormalGammaInitial. Every one of the four blocks this model carries is a
+/// path, and the factor path is still not among them: it is the first thing every
+/// draw produces.
+struct DfmTvpStochvolInitial
+{
+    /// n_lambda x tt, one column per period, each in the row-major order the
+    /// sampler draws the free loadings in.
+    arma::mat lambda;
+
+    /// n_lambda x n_lambda; only the diagonal is read.
+    arma::mat lambda_sigma_inv;
+
+    /// n_lambda; the free loadings of the period before the sample.
+    arma::vec lambda_init;
+
+    /// n_factor_a x tt, each column vec([A_1 .. A_p]) of one period. Ignored
+    /// when the factors have no dynamics.
+    arma::mat a;
+
+    /// n_factor_a x n_factor_a; only the diagonal is read.
+    arma::mat a_sigma_inv;
+
+    /// n_factor_a; the transition of the period before the sample.
+    arma::vec a_init;
+
+    /// tt x k log-volatilities of the idiosyncratic errors, one column per
+    /// observed series. One period per *row*, unlike the coefficient paths
+    /// above: that is the orientation the mixture routine works in, and the two
+    /// are not interchangeable.
+    arma::mat u_h;
+
+    /// k; the idiosyncratic log-volatility before the first period.
+    arma::vec u_h_init;
+
+    /// k; variance of the idiosyncratic log-volatility innovations. A state
+    /// rather than a prior -- the sampler redraws it every iteration -- even
+    /// though the files keep it next to the prior it is drawn under.
+    arma::vec u_h_sigma;
+
+    /// tt x n_factors log-volatilities of the factor innovations.
+    arma::mat v_h;
+
+    /// n_factors; the factor-innovation log-volatility before the first period.
+    arma::vec v_h_init;
+
+    /// n_factors; variance of the factor-innovation log-volatility innovations.
+    arma::vec v_h_sigma;
+    /// vec(C), k x n with n = VarSpec::n: the coefficients of the deterministic
+    /// terms of the measurement, column by column. Empty for a model without
+    /// deterministic terms.
+    arma::vec c;
+
+};
+
+/// Dynamic factor model whose loadings and factor transition follow random walks
+/// and whose two error terms carry stochastic volatility.
+///
+///     x_t = Lambda_t f_t + C d_t + u_t,          u_t ~ N(0, U_t),
+///     f_t = sum_{j=1..p} A_{j,t} f_{t-j} + v_t,  v_t ~ N(0, V_t),
+///
+/// with U_t = diag(exp(h^u_t)) and V_t = diag(exp(h^v_t)), and every free element
+/// of Lambda, every element of [A_1 .. A_p] and every element of both
+/// log-volatilities a random walk of its own.
+///
+/// The widest model here: everything that can move does. It is DfmTvpGamma's
+/// coefficients over DfmNormalStochvol's errors, and both halves earn their
+/// place for the reasons those two set out -- a series' exposure to the common
+/// component is not a constant of nature, and neither is the scale of the shocks
+/// it is measured against. The two are also easy to confuse for one another in a
+/// model that has only one of them: a series whose loading fell will look like a
+/// series whose idiosyncratic variance rose, and a period of common turbulence
+/// will look like a transition that changed. Carrying both is what lets the data
+/// say which.
+///
+/// The identifying block does not drift, exactly as in DfmTvpGamma: Lambda's
+/// leading N x N block stays unit lower triangular in every period, because it is
+/// the normalisation rather than a parameter.
+///
+/// Everything DfmNormalGammaInput says about the data holds here unchanged:
+/// `train.y` is the data and `train.x` its deterministic terms, `forecast.x`
+/// theirs over the horizon, `spec.h` is the horizon, the free loadings run row by
+/// row, `a` is vec([A_1 .. A_p]) with the blocks
+/// side by side, and the factors before the sample are zero rather than drawn.
+///
+/// Del Negro, M., & Otrok, C. (2008). Dynamic factor models with time-varying
+/// parameters: measuring changes in international business cycles. Federal
+/// Reserve Bank of New York Staff Report No. 326.
+struct DfmTvpStochvolInput
+{
+    VarSpec spec;
+    TrainData train;
+    TestData test; ///< `y` empty unless the file carries realised values.
+    /// `x` holds the deterministic terms of the forecast horizon, h x n with
+    /// n = VarSpec::n, one period per row. Empty for a model without them.
+    ForecastData forecast;
+
+    /// The state equation of the free loadings, in the row-major order above.
+    RandomWalkPrior lambda_prior;
+
+    /// Over vec(C), the k x n coefficients of the deterministic terms, column by
+    /// column. Unused when the model has none. Drawn row by row, so the
+    /// precision may not couple two rows of C.
+    NormalPrior c_prior;
+
+    /// The state equation of the factor transition. Unused when the factors
+    /// have no dynamics.
+    RandomWalkPrior a_prior;
+
+    StochvolPrior u_sigma_prior;  ///< k idiosyncratic log-volatilities.
+    StochvolPrior v_sigma_prior;  ///< n_factors factor-innovation log-volatilities.
+
+    DfmTvpStochvolInitial initial;
+
+    /// Whether the factors carry dynamics to draw. A transition of order zero is
+    /// a static factor model with serially independent -- but still
+    /// heteroskedastic -- factors and drifting loadings, which this sampler
+    /// estimates.
+    bool use_a() const { return spec.n_factor_a() > 0; }
+
+    void validate() const;
+};
+
+/// Where the FavarNormalWishart chain starts.
+///
+/// The state path is not among these, for the reason DfmNormalGammaInitial
+/// gives: it is the first thing every draw produces. Neither is the observed
+/// half of the state, which is data and arrives in `train`.
+struct FavarNormalWishartInitial
+{
+    /// The `n_favar_lambda` free loadings, in the order the sampler draws them
+    /// -- row by row, and within a row left to right. See
+    /// FavarNormalWishartInput.
+    arma::vec lambda;
+
+    /// vec([Phi_1 .. Phi_p]) of the state transition. Ignored when the state
+    /// carries no dynamics.
+    arma::vec a;
+
+    /// k; the diagonal of the idiosyncratic precision. A vector rather than a
+    /// matrix because R is diagonal by assumption -- that assumption is what
+    /// makes this a factor model -- exactly as in DfmNormalGammaInitial.
+    arma::vec u_sigma_inv;
+
+    /// n_state x n_state precision of the state innovations. A matrix, not a
+    /// diagonal, and that is the difference from the DFM beside it: see
+    /// FavarNormalWishartInput.
+    arma::mat v_sigma_inv;
+    /// vec(C), k x n with n = VarSpec::n: the coefficients of the deterministic
+    /// terms of the measurement, column by column. Empty for a model without
+    /// deterministic terms.
+    arma::vec c;
+
+    /// vec(C_obs), n_obs_factors x n: the deterministic terms the observed
+    /// factors deviate from, column by column. Empty for a model without
+    /// deterministic terms.
+    arma::vec c_obs;
+
+};
+
+/// Factor augmented VAR with a normal prior on the loadings and on the state
+/// transition, independent gamma priors on the idiosyncratic precisions and a
+/// Wishart prior on the precision of the state innovations.
+///
+///     x_t = Lambda_f f_t + Lambda_y y_t + C d_t + e_t,   e_t ~ N(0, R),  R diagonal,
+///     s_t = sum_{j=1..p} Phi_j s_{t-j} + v_t,    v_t ~ N(0, Q),
+///
+/// with s_t = (f_t', (y_t - C_obs d_t)')' -- y_t itself for a model without
+/// deterministic terms -- for `k` observed series in the panel x_t,
+/// `n_factors` unobserved factors f_t and `n_obs_factors` observed factors y_t,
+/// after Bernanke, Boivin and Eliasz (2005).
+///
+/// What it is, against the dynamic factor models beside it. A DFM's state is
+/// unobserved throughout; here half of it is data. The observed factors are the
+/// variables whose dynamics the model is actually about -- a policy rate, output
+/// -- and the panel is there to measure the common component they move with.
+/// They sit in the state vector rather than beside it because the transition is
+/// a VAR over both blocks jointly, and that coupling is the model: the factors
+/// respond to the policy variable and the policy variable responds to the
+/// factors.
+///
+/// Why the error precision is a Wishart here and a gamma in every DFM. R must
+/// stay diagonal -- a factor model whose idiosyncratic errors may correlate has
+/// nothing left for the factors to explain, which is why no `Dfm*` has the
+/// option. Q is a different object: it is the innovation covariance of a VAR,
+/// its observed block is an ordinary VAR covariance, and its cross block is the
+/// correlation between the factor innovations and the shock to the observed
+/// variables. Forcing that to zero would assert the policy shock is orthogonal
+/// to every factor innovation, which is the one thing a FAVAR exists to
+/// measure. So the third part of this model's name refers to Q, and R is
+/// gamma-diagonal in every member of the family.
+///
+/// That choice is what fixes the identification, and the two cannot be picked
+/// separately. A DFM pins the rotation of its factors with a unit lower
+/// triangular loading block *and* a diagonal V. With Q free the second half is
+/// gone, so the first half has to do the whole job: the leading `n_factors`
+/// square block of Lambda_f is the *identity* here, and the observed columns of
+/// those rows are zero. See VarSpec::n_favar_lambda(), which counts what that
+/// leaves.
+///
+/// The data. `train.y` holds the panel, tt x k; `train.f_obs` holds the observed
+/// factors, tt x n_obs_factors, one period per row. `z` and `w` are unused -- a
+/// FAVAR has no regressors of the kind a VAR does. `x` holds the `spec.n`
+/// deterministic terms d_t, tt x n, and is empty for a model without them. They
+/// enter twice:
+///
+///     x_t = Lambda_f f_t + Lambda_y y_t + C d_t + e_t,
+///     y_t = C_obs d_t + y~_t,   s~_t = (f_t', y~_t')' follows the VAR above,
+///
+/// so the panel is measured on the observed factors themselves and the state
+/// transition runs over their deviations from C_obs d_t. `c_prior` and
+/// `initial.c` are over vec(C), `c_obs_prior` and `initial.c_obs` over
+/// vec(C_obs), both column by column. The forecast is the transition run
+/// forward, so the only out-of-sample input it reads is `forecast.x`, the
+/// deterministic terms of the horizon, h x n. `spec.h` is the horizon.
+///
+/// Two orderings have to be agreed with the host and are the only ones not
+/// implied by a dimension:
+///
+///   - the free loadings, everywhere they appear as a vector -- `initial.lambda`
+///     and both halves of `lambda_prior` -- run row by row from row `n_factors`
+///     on, each row carrying its `n_state` elements with the factor loadings
+///     before the observed ones. The rows before that are the identifying block
+///     and carry none. That is the order the equation by equation draw consumes
+///     them in. The *posterior* is stored differently, as vec of the whole
+///     k x n_state matrix; see FavarNormalWishartDraws.
+///   - `a` is vec([Phi_1 .. Phi_p]) with the blocks side by side, so the first
+///     n_state^2 elements are Phi_1 read column-wise.
+///
+/// States before the sample are zero, both blocks of them, which is what makes
+/// the first p transitions well defined -- the convention every DFM here
+/// follows. It is a statement about the data: the observed factors are expected
+/// in deviations -- from zero, or from C_obs d_t where the model has
+/// deterministic terms, which is what those are for.
+///
+/// Bernanke, B. S., Boivin, J., & Eliasz, P. (2005). Measuring the effects of
+/// monetary policy: a factor-augmented vector autoregressive (FAVAR) approach.
+/// Quarterly Journal of Economics, 120(1), 387-422.
+struct FavarNormalWishartInput
+{
+    VarSpec spec;
+    TrainData train;
+    TestData test; ///< `y` empty unless the file carries realised values.
+    /// `x` holds the deterministic terms of the forecast horizon, h x n with
+    /// n = VarSpec::n, one period per row. Empty for a model without them.
+    ForecastData forecast;
+
+    NormalPrior lambda_prior;  ///< Over the free loadings, in the row-major order above.
+
+    /// Over vec(C), the k x n coefficients of the deterministic terms, column by
+    /// column. Unused when the model has none. Drawn row by row, so the
+    /// precision may not couple two rows of C.
+    NormalPrior c_prior;
+    /// Over vec(C_obs), n_obs_factors x n, column by column. Unused when the
+    /// model has no deterministic terms.
+    NormalPrior c_obs_prior;
+    NormalPrior a_prior;       ///< Unused when the state has no dynamics.
+
+    GammaPrior u_sigma_prior;    ///< k independent priors on the idiosyncratic precisions.
+    WishartPrior v_sigma_prior;  ///< On the n_state square precision of the state innovations.
+
+    FavarNormalWishartInitial initial;
+
+    /// Whether the state carries dynamics to draw. An order of zero is a static
+    /// model with serially independent states, which this sampler estimates --
+    /// it is not an error, though it is a strange thing to ask a FAVAR for.
+    bool use_a() const { return spec.n_favar_a() > 0; }
+
+    /// Throws std::invalid_argument describing the first inconsistency it
+    /// finds. Called by the sampler before the first draw, so a host that
+    /// forgets to call it still gets the message rather than a crash a
+    /// thousand iterations in.
+    void validate() const;
+};
+
+/// Where the VecNormalWishart chain starts.
+struct VecNormalWishartInitial
+{
+    arma::vec a;
+    arma::vec a_lambda;
+    arma::vec beta;
+    arma::mat u_sigma_inv;
+};
+
+/// The complete argument of the VecNormalWishart sampler.
+///
+/// This is the contract every host fills in: the HDF5 reader builds one out of
+/// a file, an R binding builds one out of an S4 object, and neither of them
+/// appears anywhere in the numeric code. Adding a field here is how a new
+/// input reaches the sampler; there is no other channel.
+struct VecNormalWishartInput
+{
+    VarSpec spec;
+    TrainData train;
+    ForecastData forecast; ///< `x` empty when no forecast was requested.
+    TestData test; ///< `y` empty unless the file carries realised values.
+
+    NormalPrior a_prior;          ///< Unused when there are no regressors.
+    VarSelPrior varsel_prior;     ///< Unused when spec.varsel is none.
+
+    ConstantCointSpacePrior beta_prior; ///< Unused when there are no regressors, i.e., r = 0.
+    
+    WishartPrior u_sigma_prior;    
+
+    VecNormalWishartInitial initial;
+
+    /// Whether the model has coefficients to draw at all.
+    bool use_a() const { return train.nparams() > 0; }
+    bool use_beta() const { return spec.uses_coint(); }
+    
+    /// Throws std::invalid_argument describing the first inconsistency it
+    /// finds. Called by the sampler before the first draw, so a host that
+    /// forgets to call it still gets the message rather than a crash a
+    /// thousand iterations in.
+    void validate() const;
+};
+
+/// Where the VecKlgs2010 chain starts. No inclusion indicators: the sampler
+/// implements no variable selection.
+struct VecKlgs2010Initial
+{
+    arma::vec a;
+    arma::vec beta;
+    arma::mat u_sigma_inv;
+};
+
+/// The complete argument of the VecKlgs2010 sampler -- VecNormalWishartInput
+/// against the compact regressors.
+///
+/// `train.x` is read and `train.z` is not: this is the non-SUR reading of the
+/// same model, so the regressors arrive one column per regressor rather than
+/// kroneckered up with I_k. `forecast.x` is compact for every model and so says
+/// nothing about this one either way; what it does carry is the level VAR
+/// layout every VEC forecast expects, since the forecast is the level VAR's.
+struct VecKlgs2010Input
+{
+    VarSpec spec;
+    TrainData train;
+    ForecastData forecast; ///< `x` empty when no forecast was requested.
+    TestData test; ///< `y` empty unless the file carries realised values.
+
+    NormalPrior a_prior;                ///< Unused when there are no regressors.
+    ConstantCointSpacePrior beta_prior; ///< Unused when the rank is zero.
+    WishartPrior u_sigma_prior;
+
+    VecKlgs2010Initial initial;
+
+    /// Coefficients in `a`, counted from the model dimensions rather than from
+    /// the data.
+    ///
+    /// The other models read this off `z.n_cols`, which cannot be done here:
+    /// the loadings have no column in `x` at all -- their regressor is
+    /// beta' w_{t-1}, a function of the current draw rather than data -- so `x`
+    /// is short by exactly the k*rank of them. Contemporaneous coefficients are
+    /// left out because validate() refuses a structural model outright; a
+    /// Wishart prior does not identify one.
+    int n_a() const { return spec.n_alpha() + spec.n_non_structural_vec(); }
+
+    /// Columns of the design matrix the sampler builds: the `rank` error
+    /// correction columns in front of the compact regressors.
+    int n_design() const { return spec.rank + spec.n_x_vec(); }
+
+    /// Whether the model has coefficients to draw at all.
+    bool use_a() const { return n_a() > 0; }
+    bool use_beta() const { return spec.uses_coint(); }
+
+    /// Throws std::invalid_argument describing the first inconsistency it
+    /// finds. Called by the sampler before the first draw, so a host that
+    /// forgets to call it still gets the message rather than a crash a
+    /// thousand iterations in.
+    void validate() const;
+};
+
+/// Where the VecNormalGamma chain starts.
+struct VecNormalGammaInitial
+{
+    arma::vec a;
+    arma::vec a_lambda;
+    arma::vec beta;
+    arma::vec psi;         ///< n_psi free elements of the covariance block.
+    arma::vec psi_lambda;
+    arma::mat u_sigma_inv; ///< k x k error precision.
+};
+
+/// VEC with a normal prior on the coefficients, the cointegration space prior on
+/// beta and independent gamma priors on the error precisions, optionally with a
+/// constant covariance block.
+///
+/// VecNormalWishart's two coefficient blocks with VarNormalGamma's error block.
+/// The one place the swap is visible is Sigma's own posterior: the cointegration
+/// space prior conditions alpha on it, and where the Wishart absorbs that back
+/// into its scale, independent gammas have no conjugate update for it and
+/// bvartools' .bvecalg does not attempt one. Neither does this.
+struct VecNormalGammaInput
+{
+    VarSpec spec;
+    TrainData train;
+    ForecastData forecast;
+    TestData test; ///< `y` empty unless the file carries realised values.
+
+    NormalPrior a_prior;
+    VarSelPrior varsel_prior;
+
+    ConstantCointSpacePrior beta_prior; ///< Unused when the rank is zero.
+
+    NormalPrior psi_prior;
+    VarSelPrior psi_varsel_prior;
+
+    /// Selection for the covariance block, when it is to differ from the
+    /// model's. Unset is not the same as VarSelection::none: unset means the
+    /// file or the host said nothing, and spec.varsel then governs both blocks,
+    /// which is what every file written before this was read has always meant.
+    /// Setting it to none is the way to say that the coefficients are selected
+    /// over and the covariances are not.
+    std::optional<VarSelection> psi_varsel;
+
+    GammaPrior u_sigma_prior;
+
+    VecNormalGammaInitial initial;
+
+    bool use_a() const { return train.nparams() > 0; }
+    bool use_beta() const { return spec.uses_coint(); }
+    bool use_psi() const { return spec.uses_covar(); }
+    bool uses_psi_varsel() const { return psi_selection() != VarSelection::none; }
+    /// The scheme the covariance block is actually drawn under.
+    VarSelection psi_selection() const { return psi_varsel.value_or(spec.varsel); }
+
+    void validate() const;
+};
+
+/// Where the VecNormalStochvol chain starts.
+struct VecNormalStochvolInitial
+{
+    arma::vec a;
+    arma::vec a_lambda;
+    arma::vec beta;
+    arma::vec psi;
+    arma::vec psi_lambda;
+
+    arma::mat h;      ///< tt x k log-volatilities, one column per variable.
+    arma::vec h_init; ///< k; the log-volatility before the first period.
+    arma::vec h_sigma;
+};
+
+/// VEC with a normal prior on the coefficients, the cointegration space prior on
+/// beta and stochastic volatility in the errors, optionally with a constant
+/// covariance block.
+///
+/// Only BVS reaches this model; SSVS is not implemented for it.
+///
+/// The error precision moves with time and the cointegration space prior needs
+/// a G to scale alpha by, so G is fixed for the whole run -- `beta_prior.g_inv`
+/// when given, the precision the starting volatilities imply averaged over the
+/// sample otherwise; see ConstantCointSpacePrior::g_inv. Everything else is
+/// VecNormalWishart's coefficient blocks against a per-period precision.
+struct VecNormalStochvolInput
+{
+    VarSpec spec;
+    TrainData train;
+    ForecastData forecast;
+    TestData test; ///< `y` empty unless the file carries realised values.
+
+    NormalPrior a_prior;
+    VarSelPrior varsel_prior;
+
+    ConstantCointSpacePrior beta_prior;
+
+    NormalPrior psi_prior;
+    VarSelPrior psi_varsel_prior;
+
+    /// Selection for the covariance block, when it is to differ from the
+    /// model's. Unset is not the same as VarSelection::none: unset means the
+    /// file or the host said nothing, and spec.varsel then governs both blocks,
+    /// which is what every file written before this was read has always meant.
+    /// Setting it to none is the way to say that the coefficients are selected
+    /// over and the covariances are not.
+    std::optional<VarSelection> psi_varsel;
+
+    StochvolPrior u_sigma_prior;
+
+    VecNormalStochvolInitial initial;
+
+    bool use_a() const { return train.nparams() > 0; }
+    bool use_beta() const { return spec.uses_coint(); }
+    bool use_psi() const { return spec.uses_covar(); }
+    bool uses_psi_varsel() const { return psi_selection() != VarSelection::none; }
+    /// The scheme the covariance block is actually drawn under.
+    VarSelection psi_selection() const { return psi_varsel.value_or(spec.varsel); }
+
+    void validate() const;
+};
+
+/// Where the VecTvpWishart chain starts.
+///
+/// The coefficients and the cointegration vectors are paths; the error
+/// precision is not.
+struct VecTvpWishartInitial
+{
+    arma::mat a;           ///< n_a x tt, loadings first.
+    arma::mat a_sigma_inv; ///< n_a x n_a; only the diagonal is read.
+    arma::vec a_init;      ///< n_a; the state before the first period.
+    arma::vec a_lambda;
+
+    arma::mat beta;      ///< n_beta x tt.
+    arma::vec beta_init; ///< n_beta.
+
+    arma::mat u_sigma_inv; ///< k x k error precision.
+};
+
+/// VEC whose coefficients follow a random walk, cointegration vectors included,
+/// with a Wishart prior on the error precision. It carries no psi block: the
+/// error covariance is the Wishart precision alone.
+struct VecTvpWishartInput
+{
+    VarSpec spec;
+    TrainData train;
+    ForecastData forecast;
+    TestData test; ///< `y` empty unless the file carries realised values.
+
+    RandomWalkPrior a_prior;
+    VarSelPrior a_varsel_prior;
+
+    TvpCointSpacePrior beta_prior; ///< Unused when the rank is zero.
+
+    WishartPrior u_sigma_prior;
+
+    VecTvpWishartInitial initial;
+
+    bool use_a() const { return train.nparams() > 0; }
+    bool use_beta() const { return spec.uses_coint(); }
+
+    void validate() const;
+};
+
+/// Where the VecTvpGamma chain starts.
+struct VecTvpGammaInitial
+{
+    arma::mat a;
+    arma::mat a_sigma_inv;
+    arma::vec a_init;
+    arma::vec a_lambda;
+
+    arma::mat beta;
+    arma::vec beta_init;
+
+    arma::mat psi;           ///< n_psi x tt.
+    arma::mat psi_sigma_inv; ///< n_psi x n_psi; only the diagonal is read.
+    arma::vec psi_init;
+    arma::vec psi_lambda;
+
+    arma::mat u_omega_inv; ///< k x k.
+};
+
+/// VEC whose coefficients follow a random walk, cointegration vectors included,
+/// with independent gamma priors on the error precisions and an optional
+/// time-varying covariance block.
+struct VecTvpGammaInput
+{
+    VarSpec spec;
+    TrainData train;
+    ForecastData forecast;
+    TestData test; ///< `y` empty unless the file carries realised values.
+
+    RandomWalkPrior a_prior;
+    VarSelPrior a_varsel_prior;
+
+    TvpCointSpacePrior beta_prior;
+
+    RandomWalkPrior psi_prior;
+    VarSelPrior psi_varsel_prior;
+
+    GammaPrior u_sigma_prior;
+
+    /// Selection for the covariance block, when it is to differ from the
+    /// model's. Unset is not the same as VarSelection::none: unset means the
+    /// file or the host said nothing, and spec.varsel then governs both blocks.
+    /// Setting it to none is how a file says that the coefficients are selected
+    /// over and the covariances are not.
+    std::optional<VarSelection> psi_varsel;
+
+    VecTvpGammaInitial initial;
+
+    bool use_a() const { return train.nparams() > 0; }
+    bool use_beta() const { return spec.uses_coint(); }
+    bool use_psi() const { return spec.uses_covar(); }
+    bool uses_psi_varsel() const { return psi_selection() != VarSelection::none; }
+    /// The scheme the covariance block is actually drawn under.
+    VarSelection psi_selection() const { return psi_varsel.value_or(spec.varsel); }
+
+    void validate() const;
+};
+
+/// Where the VecTvpStochvol chain starts.
+///
+/// Everything this model carries is a path: the coefficients, the cointegration
+/// vectors, the covariance block and the log-volatility. `beta` is the one that
+/// has no state variance next to it -- see TvpCointSpacePrior for why it is
+/// fixed rather than drawn.
+struct VecTvpStochvolInitial
+{
+    arma::mat a;           ///< n_a x tt, loadings first.
+    arma::mat a_sigma_inv; ///< n_a x n_a; only the diagonal is read.
+    arma::vec a_init;      ///< n_a; the state before the first period.
+    arma::vec a_lambda;
+
+    arma::mat beta;      ///< n_beta x tt; each column is vec of a k_beta x rank matrix.
+    arma::vec beta_init; ///< n_beta; the state before the first period.
+
+    arma::mat psi;           ///< n_psi x tt.
+    arma::mat psi_sigma_inv; ///< n_psi x n_psi; only the diagonal is read.
+    arma::vec psi_init;      ///< n_psi.
+    arma::vec psi_lambda;
+
+    arma::mat h;      ///< tt x k log-volatilities, one column per variable.
+    arma::vec h_init; ///< k; the log-volatility before the first period.
+
+    /// k; variance of the log-volatility innovations. A state rather than a
+    /// prior -- the sampler redraws it every iteration -- even though the
+    /// files keep it next to the prior it is drawn under.
+    arma::vec h_sigma;
+};
+
+/// VEC whose loadings, lagged differences and cointegration vectors all follow
+/// a random walk, with stochastic volatility in the errors and an optional
+/// time-varying covariance block.
+///
+/// This is bvartools' .bvectvpalg for the "sv" and "sv+covar" error
+/// specifications: VarTvpStochvol with one extra Gibbs block, in which beta is
+/// drawn as a state path of its own and the loadings' regressors are rebuilt
+/// from it. Only BVS reaches this model; SSVS is not implemented for it, and
+/// selection may not touch the loadings -- see validate().
+struct VecTvpStochvolInput
+{
+    VarSpec spec;
+    TrainData train;
+    ForecastData forecast;
+    TestData test; ///< `y` empty unless the file carries realised values.
+
+    RandomWalkPrior a_prior;
+    VarSelPrior a_varsel_prior;
+
+    TvpCointSpacePrior beta_prior; ///< Unused when the rank is zero.
+
+    RandomWalkPrior psi_prior;
+    VarSelPrior psi_varsel_prior;
+
+    StochvolPrior u_sigma_prior;
+
+    /// Selection for the covariance block, when it is to differ from the
+    /// model's. Unset is not the same as VarSelection::none: unset means the
+    /// file or the host said nothing, and spec.varsel then governs both blocks.
+    /// Setting it to none is how a file says that the coefficients are selected
+    /// over and the covariances are not.
+    std::optional<VarSelection> psi_varsel;
+
+    VecTvpStochvolInitial initial;
+
+    bool use_a() const { return train.nparams() > 0; }
+    bool use_beta() const { return spec.uses_coint(); }
+    bool use_psi() const { return spec.uses_covar(); }
+    bool uses_psi_varsel() const { return psi_selection() != VarSelection::none; }
+    /// The scheme the covariance block is actually drawn under.
+    VarSelection psi_selection() const { return psi_varsel.value_or(spec.varsel); }
+
+    void validate() const;
+};
+
+
+/// Everything a discounted time varying parameter VAR reads.
+///
+/// Shorter than its sampling siblings by exactly the fields a sampler needs and
+/// this does not: there are no starting values, because nothing is iterated,
+/// and no prior on a state innovation variance, because the drift is the
+/// discount factor in `spec` rather than a parameter.
+struct VarTvpDiscountInput
+{
+    VarSpec spec;
+    TrainData train;
+    ForecastData forecast;
+    TestData test; ///< `y` empty unless the file carries realised values.
+
+    MatrixNormalPrior a_prior;
+    WishartPrior u_sigma_prior;
+
+    /// Counted off the compact regressors rather than off `z`, which this model
+    /// does not read at all: validate() refuses a file that carries the SUR
+    /// matrix and nothing else, so TrainData::nparams() is zero on exactly the
+    /// inputs this is meant to say yes to.
+    bool use_a() const { return train.x.n_cols > 0; }
+
+    void validate() const;
+};
+
+/// Everything a discounted time varying parameter VEC reads.
+///
+/// The same fields as VarTvpDiscountInput plus the two a VEC needs: the error
+/// correction term `train.w`, and the cointegration matrix `beta` it is
+/// multiplied by. The design the filter runs against is
+///
+///     x_t = [ beta' w_t , the compact regressors of `train.x` ],
+///
+/// so `train.x` holds the short-run blocks alone -- the lagged differences, the
+/// unmodelled variables and the unrestricted deterministic terms, VarSpec::n_x_vec()
+/// of them -- exactly as it does for VecKlgs2010, and the `rank` error
+/// correction columns go in front of them.
+struct VecTvpDiscountInput
+{
+    VarSpec spec;
+    TrainData train;
+    ForecastData forecast; ///< In the level layout every VEC forecasts in.
+    TestData test;         ///< `y` empty unless the file carries realised levels.
+
+    MatrixNormalPrior a_prior; ///< Over the n_design x k coefficient matrix.
+    WishartPrior u_sigma_prior;
+
+    /// k_beta x rank: the cointegration space, **given rather than estimated**.
+    ///
+    /// This is what makes the model conjugate and it is the one assumption that
+    /// separates it from the three sampling VECs beside it. `beta' w_t` is a
+    /// parameter times data, so a VEC that draws beta has a design that moves
+    /// with the draw and no closed form at all; hold beta and the design is
+    /// data, every equation shares it, and the whole of VarTvpDiscount applies
+    /// unchanged. The loadings still drift, so what the model says is that the
+    /// *adjustment* to the long-run relations moves and the relations themselves
+    /// do not -- not that they are known to be right, only that this run
+    /// conditions on them.
+    ///
+    /// Where the value comes from is the host's business: a first-stage
+    /// estimate, a Johansen vector, a restriction from theory, or the posterior
+    /// mean of a constant-coefficient VEC. Since the filter returns the exact
+    /// marginal likelihood of the sample given it -- the sum of
+    /// VecTvpDiscountPosterior::loglik -- a grid over candidate spaces, over the
+    /// rank, or over the two discounts can be compared without a chain being run
+    /// for any of them.
+    ///
+    /// Empty at rank zero, which is a VAR in differences and a model this
+    /// accepts.
+    arma::mat beta;
+
+    /// Columns of the design: the `rank` error correction columns in front of
+    /// the compact regressors. Paired with VecKlgs2010Input::n_design(), which
+    /// counts the same thing.
+    int n_design() const { return spec.rank + spec.n_x_vec(); }
+
+    bool use_a() const { return n_design() > 0; }
+    bool use_beta() const { return spec.uses_coint(); }
+
+    void validate() const;
+};
+
+/// Where the UcNormalGamma chain starts.
+///
+/// The trend path is not among these: it is the first thing every draw
+/// produces, from the coefficients and the precision, so there is nothing for a
+/// starting value to do.
+struct UcNormalGammaInitial
+{
+    /// The VarSpec::n_uc_a() free cycle coefficients. Under UcCycle::var,
+    /// vec([Phi_1 .. Phi_p]) of the k x kp matrix; under UcCycle::own, its
+    /// diagonals alone, lag by lag: Phi_1's k, then Phi_2's, and so on. Ignored
+    /// when the cycle has no lags.
+    arma::vec a;
+
+    /// vec(C), k x n with n = VarSpec::n: the drift of each trend on the
+    /// deterministic terms, column by column. Empty for a model without them.
+    arma::vec c;
+
+    /// The trend before the sample, k * VarSpec::uc_trend_order(): tau_0, and
+    /// for a smooth trend tau_{-1} after it.
+    arma::vec tau0;
+
+    /// The (2k)(2k-1)/2 free elements of the covariance block, row by row of
+    /// its strict lower triangle. Ignored without one.
+    arma::vec psi;
+
+    /// 2k, the diagonal of the precision of the shocks after the covariance
+    /// block has orthogonalised them -- of the shocks themselves without one.
+    /// Cycle shocks first, then trend shocks.
+    arma::vec u_omega_inv;
+
+    /// k, the precision of each series' irregular component. Empty without
+    /// one (VarSpec::irregular).
+    arma::vec irregular_inv;
+};
+
+/// Unobserved components model with a normal prior on the cycle, the drift and
+/// the trend's starting point, and independent gamma priors on the precisions
+/// of its shocks, optionally with a constant covariance block.
+///
+///     y_t   = tau_t + c_t,
+///     c_t   = sum_{j=1..p} Phi_j c_{t-j} + u^c_t,
+///     tau_t = tau_{t-1} + C d_t + u^tau_t                    (VarSpec::trend rw)
+///     tau_t = 2 tau_{t-1} - tau_{t-2} + C d_t + u^tau_t      (VarSpec::trend smooth)
+///
+/// for k series, each with a trend and a cycle of its own, the 2k shocks
+/// (u^c_t', u^tau_t')' jointly normal. `train.y` holds the series, tt x k, and
+/// is the whole of the sample: the cycle is zero before it, as in Grant and Chan
+/// (2017), and the trend starts from `tau0`, which is drawn. `train.x` holds the
+/// n deterministic terms d_t, tt x n, and is empty without them; they enter the
+/// trend's increment, so a column of ones is a constant drift and a step dummy
+/// is a break in it. `z` and `w` are unused. `forecast.x` is d_t over the
+/// horizon, h x n; `spec.h` is the horizon.
+///
+/// The error is "gamma" or "gamma+covar", the same two spellings and the same
+/// arrangement VarNormalGamma has: the shocks e_t are orthogonalised by a unit
+/// lower triangular Psi, Psi e_t ~ N(0, Omega^-1), Omega diagonal, so the shock
+/// precision is Psi' Omega Psi. Without the block Psi is the identity and the
+/// 2k shocks are independent -- the model of Clark (1987). With it, and k = 1,
+/// it is the correlated model of Morley, Nelson and Zivot (2003) with the
+/// correlation as a loading; with k > 1, Sinclair's (2009) bivariate one.
+struct UcNormalGammaInput
+{
+    VarSpec spec;
+    TrainData train;
+    TestData test; ///< `y` empty unless the file carries realised values.
+    /// `x` holds the deterministic terms of the forecast horizon, h x n with
+    /// n = VarSpec::n, one period per row. Empty for a model without them.
+    ForecastData forecast;
+
+    NormalPrior a_prior;    ///< Over the free cycle coefficients. Unused when p is zero.
+    NormalPrior c_prior;    ///< Over vec(C). Unused when n is zero.
+    NormalPrior tau0_prior; ///< Over the k * uc_trend_order() starting values.
+    NormalPrior psi_prior;  ///< Unused without a covariance block.
+
+    /// 2k independent priors on the diagonal of Omega, cycle shocks first.
+    GammaPrior u_sigma_prior;
+
+    /// k independent gamma priors on the irregular component's precisions.
+    /// Unused without one.
+    GammaPrior irregular_prior;
+
+    UcNormalGammaInitial initial;
+
+    bool use_a() const { return spec.p > 0; }
+    bool use_c() const { return spec.n > 0; }
+    bool use_psi() const { return spec.covar; }
+    bool use_irregular() const { return spec.irregular; }
+
+    /// Throws std::invalid_argument describing the first inconsistency it
+    /// finds. Called by the sampler before the first draw.
+    void validate() const;
+};
+
+/// Where the UcNormalWishart chain starts. UcNormalGammaInitial, with the shock
+/// precision a whole matrix rather than a diagonal and a covariance block.
+struct UcNormalWishartInitial
+{
+    arma::vec a;    ///< The free cycle coefficients; see UcNormalGammaInitial::a.
+    arma::vec c;    ///< vec(C), k x n. Empty without deterministic terms.
+    arma::vec tau0; ///< k * uc_trend_order(): tau_0, then tau_{-1} for a smooth trend.
+
+    /// 2k x 2k, the precision of the shocks, cycle shocks first.
+    arma::mat u_sigma_inv;
+
+    /// k, the irregular component's precisions. Empty without one.
+    arma::vec irregular_inv;
+};
+
+/// Unobserved components model with a Wishart prior on the precision of its
+/// 2k shocks: UcNormalGammaInput's model with the shock covariance Sigma
+/// unrestricted, as Grant and Chan (2017) and Sinclair (2009) estimate the
+/// bivariate correlated model, rather than independent shocks or a covariance
+/// block in a fixed order. The prior is inverse Wishart on Sigma, df degrees of
+/// freedom and scale S_0, 2k x 2k, cycle shocks first.
+struct UcNormalWishartInput
+{
+    VarSpec spec;
+    TrainData train;
+    TestData test; ///< `y` empty unless the file carries realised values.
+    /// `x` holds the deterministic terms of the forecast horizon, h x n.
+    ForecastData forecast;
+
+    NormalPrior a_prior;    ///< Over the free cycle coefficients. Unused when p is zero.
+    NormalPrior c_prior;    ///< Over vec(C). Unused when n is zero.
+    NormalPrior tau0_prior; ///< Over the k * uc_trend_order() starting values.
+
+    WishartPrior u_sigma_prior; ///< df and the 2k x 2k scale.
+
+    /// k independent gamma priors on the irregular component's precisions.
+    GammaPrior irregular_prior;
+
+    UcNormalWishartInitial initial;
+
+    bool use_a() const { return spec.p > 0; }
+    bool use_c() const { return spec.n > 0; }
+    bool use_irregular() const { return spec.irregular; }
+
+    void validate() const;
+};
+
+/// Where the UcNormalStochvol chain starts.
+struct UcNormalStochvolInitial
+{
+    arma::vec a;    ///< The free cycle coefficients; see UcNormalGammaInitial::a.
+    arma::vec c;    ///< vec(C), k x n. Empty without deterministic terms.
+    arma::vec tau0; ///< k * uc_trend_order().
+    arma::vec psi;  ///< The k(2k-1) free elements of Psi. Ignored without one.
+
+    arma::mat h;       ///< tt x 2k log-volatilities, one column per shock.
+    arma::vec h_init;  ///< 2k; the log-volatility before the first period.
+    /// 2k; variance of the log-volatility innovations. A state rather than a
+    /// prior: the sampler redraws it every iteration.
+    arma::vec h_sigma;
+
+    /// k, the irregular component's precisions. Empty without one.
+    arma::vec irregular_inv;
+};
+
+/// Unobserved components model with stochastic volatility on each of its 2k
+/// shocks: UcNormalGammaInput's model with Omega moving,
+///
+///     Psi e_t ~ N(0, diag(exp(h_t))),   h_t = h_{t-1} + eta_t,
+///
+/// each log-volatility a random walk of its own, in the centred
+/// parameterisation or the non-centred one of Fruhwirth-Schnatter and Wagner
+/// (2010) where `u_sigma_prior.state.omega_v` is set -- and then the
+/// Savage-Dickey test of Chan (2018) for whether each shock's variance moves at
+/// all. Over the trend and the irregular shocks alone, k = 1 and p = 0, this is
+/// the UCSV model of Stock and Watson (2007). The error is "sv" or "sv+covar",
+/// the second putting a constant covariance block in front of the volatilities.
+/// The irregular component, where there is one, has a constant precision.
+struct UcNormalStochvolInput
+{
+    VarSpec spec;
+    TrainData train;
+    TestData test; ///< `y` empty unless the file carries realised values.
+    ForecastData forecast;
+
+    NormalPrior a_prior;
+    NormalPrior c_prior;
+    NormalPrior tau0_prior;
+    NormalPrior psi_prior; ///< Unused without a covariance block.
+
+    /// Over the 2k log-volatilities, cycle shocks first.
+    StochvolPrior u_sigma_prior;
+
+    GammaPrior irregular_prior;
+
+    UcNormalStochvolInitial initial;
+
+    bool use_a() const { return spec.p > 0; }
+    bool use_c() const { return spec.n > 0; }
+    bool use_psi() const { return spec.covar; }
+    bool use_irregular() const { return spec.irregular; }
+
+    void validate() const;
+};
+
+/// Where the UcNormalSkew chain starts.
+struct UcNormalSkewInitial
+{
+    arma::vec a;    ///< The free cycle coefficients; see UcNormalGammaInitial::a.
+    arma::vec c;    ///< vec(C), k x n. Empty without deterministic terms.
+    arma::vec tau0; ///< k * uc_trend_order().
+
+    /// k * 2 (1 + n_skew): per series, the coefficients of the two log scales
+    /// on the skew index -- gamma_v then gamma_u for the skew normal, rho_r then
+    /// rho_w for the asymmetric Laplace, each a constant followed by n_skew
+    /// slopes. See UcNormalSkewInput.
+    arma::vec skew;
+
+    /// k, the precision of the shock that is not skewed.
+    arma::vec u_omega_inv;
+
+    /// k, the irregular component's precisions. Empty without one.
+    arma::vec irregular_inv;
+};
+
+/// Unobserved components model whose cycle -- or trend -- shocks are skewed,
+/// with a scale that moves with an index such as macroeconomic uncertainty,
+/// after Huang, Luo and Wang (2026). One of each series' two shocks
+/// (VarSpec::skew_shock) is
+///
+///     skew normal (VarSpec::skew "snd"):   v_t - u_t,
+///         v_t ~ N(0, sigma_v,t^2),  u_t ~ N+(0, sigma_u,t^2),
+///         log sigma_j,t = gamma_j0 + gamma_j' z_t,   j = v, u;
+///     asymmetric Laplace ("ald"):          r_t - w_t,
+///         r_t, w_t exponential of means lambda_r,t and lambda_w,t,
+///         log lambda_j,t = rho_j0 + rho_j' z_t,      j = r, w,
+///
+/// and the other is normal with a gamma prior on its precision. z_t is the
+/// n_skew-vector of the index, `train.skew_x`, tt x n_skew, and over the horizon
+/// `forecast.skew_x`, h x n_skew; with n_skew zero the scales are constant.
+/// The skew normal is skewed to the left, as in the paper; the asymmetric
+/// Laplace to whichever side the data say.
+///
+/// Both have a normal mixture representation -- the skewed shock is normal
+/// given a latent half normal or exponential variate -- so given those latents
+/// the model is the Gaussian one every member of the family is, with a shock
+/// mean and a variance that move with the period. The scale coefficients are
+/// updated by a random walk Metropolis-Hastings step against the shocks'
+/// closed form marginal density, the latents integrated out, and the latents
+/// are then drawn given them: a truncated normal for the skew normal, a
+/// generalised inverse Gaussian for the asymmetric Laplace.
+///
+/// No covariance block: the skewed shock's density is the model, and rotating
+/// the shocks into each other would make it a different one.
+struct UcNormalSkewInput
+{
+    VarSpec spec;
+    TrainData train;
+    TestData test; ///< `y` empty unless the file carries realised values.
+    ForecastData forecast;
+
+    /// The skew index over the sample, tt x n_skew, and over the horizon, h x
+    /// n_skew. Empty for constant scales.
+    arma::mat train_skew_x;
+    arma::mat forecast_skew_x;
+
+    NormalPrior a_prior;
+    NormalPrior c_prior;
+    NormalPrior tau0_prior;
+
+    /// Over the k * 2 (1 + n_skew) scale coefficients, laid out as
+    /// UcNormalSkewInitial::skew.
+    NormalPrior skew_prior;
+
+    /// k gamma priors on the precision of the shock that is not skewed.
+    GammaPrior u_sigma_prior;
+
+    GammaPrior irregular_prior;
+
+    UcNormalSkewInitial initial;
+
+    bool use_a() const { return spec.p > 0; }
+    bool use_c() const { return spec.n > 0; }
+    bool use_irregular() const { return spec.irregular; }
+    /// The width of the skew index.
+    arma::uword n_skew() const { return train_skew_x.n_cols; }
+
+    void validate() const;
+};
+
+} // namespace bayests
+
+#endif // BAYESTS_INPUTS_H
