@@ -1,0 +1,1080 @@
+// SPDX-License-Identifier: BSD-3-Clause
+// Copyright (c) 2026 Franz X. Mohr
+
+#ifndef BAYESTS_RESULTS_H
+#define BAYESTS_RESULTS_H
+
+#include "bayests/arma.h"
+
+namespace bayests
+{
+
+/// Posterior draws of a VAR with a normal prior on the coefficients and a
+/// Wishart prior on the error precision.
+///
+/// Draws run along the columns, which is the layout the samplers accumulate in
+/// and the one that keeps a single draw contiguous. The model file keeps that
+/// orientation: in HDF5 dataspace terms every posterior dataset is one row per
+/// quantity and one column per draw, which is what h5py reports. R's readers
+/// reverse the dimension order, R being column-major where HDF5 is row-major,
+/// so an R session sees the transpose -- draws in rows, which is what `coda`
+/// expects of an `mcmc` object. A host whose ecosystem wants that convention
+/// transposes at the boundary; the file itself is not transposed.
+struct VarNormalWishartDraws
+{
+    /// nparams x iterations. Empty when the model has no regressors.
+    arma::mat a;
+
+    /// nparams x iterations of zeros and ones. Empty unless variable
+    /// selection was requested.
+    arma::mat a_lambda;
+
+    /// (k * k) x iterations; each column is a vectorised precision matrix.
+    arma::mat u_sigma_inv;
+
+    /// (k * tt) x iterations, each column the panel as that draw completed it,
+    /// stacked by period the way TrainData::y is: where TrainData::constraints
+    /// pins an entry it is the observation, and everywhere else a draw. Empty
+    /// unless the panel was not observed whole. It is part of the posterior, not
+    /// derivable from it -- the draws of `a` were made given these paths -- and
+    /// it is what a forecast starts from.
+    arma::mat y;
+
+    /// G x iterations: the error precision of each soft group of the training
+    /// constraints, group g in row g - 1. Empty unless some row is soft. The
+    /// log likelihood of a panel with soft rows depends on it.
+    arma::mat constraints_inv;
+
+    /// k x iterations: the unconditional mean under VarSpec::steady_state,
+    /// whose intercept is in `a`. Empty without it.
+    arma::mat mu;
+
+    /// G x iterations: the group scales of the adaptive prior on `a`, and
+    /// nparams x iterations: its local scales under a horseshoe or a
+    /// normal-gamma prior. Empty without one (VarSpec::shrinkage).
+    arma::mat a_shrinkage;
+    arma::mat a_local;
+    /// G x iterations: theta_g of a normal-gamma prior that draws it. Empty
+    /// where theta is fixed.
+    arma::mat a_theta;
+
+    /// Length of the chain these draws came from.
+    arma::uword iterations() const { return u_sigma_inv.n_cols; }
+
+    bool has_a() const { return a.n_elem > 0; }
+    bool has_lambda() const { return a_lambda.n_elem > 0; }
+    bool has_y() const { return y.n_elem > 0; }
+    bool has_constraints_inv() const { return constraints_inv.n_elem > 0; }
+};
+
+/// Posterior draws of a VAR with independent gamma priors on the error
+/// precisions and, optionally, a constant covariance block.
+///
+/// Same convention as VarNormalWishartDraws: draws along the columns, and a
+/// member left empty is how "the model did not have that part" is expressed.
+struct VarNormalGammaDraws
+{
+    arma::mat a;           ///< nparams x iterations.
+    arma::mat a_lambda;    ///< nparams x iterations of zeros and ones.
+
+    /// (k * k) x iterations; each column a vectorised lower-triangular Psi.
+    arma::mat psi;
+    arma::mat psi_lambda;
+
+    /// k x iterations. Only the diagonal is drawn, so only it is kept.
+    arma::mat u_omega_inv;
+
+    /// (k * k) x iterations; each column a vectorised precision matrix.
+    arma::mat u_sigma_inv;
+
+    /// (k * tt) x iterations, the panel as each draw completed it, where it was
+    /// not observed whole; see VarNormalWishartDraws::y.
+    arma::mat y;
+
+    /// G x iterations, the error precision of each soft group of the training
+    /// constraints; see VarNormalWishartDraws::constraints_inv.
+    arma::mat constraints_inv;
+
+    /// k x iterations: the unconditional mean under VarSpec::steady_state,
+    /// whose intercept is in `a`. Empty without it.
+    arma::mat mu;
+
+    /// G x iterations: the group scales of the adaptive prior on `a`, and
+    /// nparams x iterations: its local scales under a horseshoe or a
+    /// normal-gamma prior. Empty without one (VarSpec::shrinkage).
+    arma::mat a_shrinkage;
+    arma::mat a_local;
+    /// G x iterations: theta_g of a normal-gamma prior that draws it. Empty
+    /// where theta is fixed.
+    arma::mat a_theta;
+
+    arma::uword iterations() const { return u_sigma_inv.n_cols; }
+    bool has_a() const { return a.n_elem > 0; }
+    bool has_psi() const { return psi.n_elem > 0; }
+    bool has_y() const { return y.n_elem > 0; }
+    bool has_constraints_inv() const { return constraints_inv.n_elem > 0; }
+};
+
+/// Posterior draws of a VAR with stochastic volatility.
+///
+/// The error precision moves with time, so unlike the constant-variance models
+/// a draw is a whole path rather than a single matrix.
+struct VarNormalStochvolDraws
+{
+    arma::mat a;        ///< nparams x iterations.
+    arma::mat a_lambda;
+
+    arma::mat psi;      ///< (k * k) x iterations.
+    arma::mat psi_lambda;
+
+    /// (k * tt) x iterations: the diagonal of the precision, period by period.
+    arma::mat u_omega_inv;
+
+    /// (k * k * tt) x iterations: one vectorised precision matrix per period,
+    /// periods stacked within a column.
+    arma::mat u_sigma_inv;
+
+    /// k x iterations: the variance of the log-volatility innovations, one per
+    /// variable -- the step a forecast simulates the volatility forward by.
+    /// Stored at /posterior/u_sigma_inv/sigma, beside the /priors/u_sigma group
+    /// it is drawn under.
+    arma::mat h_sigma;
+
+    /// (k * tt) x iterations, the panel as each draw completed it, where it was
+    /// not observed whole; see VarNormalWishartDraws::y.
+    arma::mat y;
+
+    /// G x iterations, the error precision of each soft group of the training
+    /// constraints; see VarNormalWishartDraws::constraints_inv.
+    arma::mat constraints_inv;
+
+    /// k x iterations: the unconditional mean under VarSpec::steady_state,
+    /// whose intercept is in `a`. Empty without it.
+    arma::mat mu;
+
+    /// G x iterations: the group scales of the adaptive prior on `a`, and
+    /// nparams x iterations: its local scales under a horseshoe or a
+    /// normal-gamma prior. Empty without one (VarSpec::shrinkage).
+    arma::mat a_shrinkage;
+    arma::mat a_local;
+    /// G x iterations: theta_g of a normal-gamma prior that draws it. Empty
+    /// where theta is fixed.
+    arma::mat a_theta;
+
+    arma::uword iterations() const { return u_sigma_inv.n_cols; }
+    bool has_a() const { return a.n_elem > 0; }
+    bool has_psi() const { return psi.n_elem > 0; }
+    bool has_y() const { return y.n_elem > 0; }
+    bool has_constraints_inv() const { return constraints_inv.n_elem > 0; }
+};
+
+/// Posterior draws of a VAR estimated at a conditional quantile.
+///
+/// The error variance moves with the latent scale of the asymmetric Laplace, so
+/// like the stochastic volatility models a draw carries a whole path rather than
+/// a single matrix. Unlike them there is no covariance block, so every stored
+/// precision matrix is diagonal -- kept in the k x k form all the same, because
+/// that is the shape every reader of this library expects and the one
+/// iterations() is counted off.
+///
+/// The latent scales themselves are not kept. They are k * tt numbers per draw
+/// of pure nuisance, and `u_omega_inv` together with `u_scale` recovers them.
+struct VarNormalAldDraws
+{
+    arma::mat a;        ///< nparams x iterations.
+    arma::mat a_lambda;
+
+    /// k x iterations: the scale of the asymmetric Laplace, one per equation.
+    arma::mat u_scale;
+
+    /// (k * tt) x iterations: the diagonal of the precision, period by period.
+    arma::mat u_omega_inv;
+
+    /// (k * k * tt) x iterations: one vectorised precision matrix per period,
+    /// periods stacked within a column. Diagonal throughout.
+    arma::mat u_sigma_inv;
+
+    // Under a quantile grid (VarSpec::quantiles) `a`, `a_lambda` and `u_scale`
+    // hold one block per level, stacked level by level -- (nparams * Q) and
+    // (k * Q) rows -- and the two precisions, one path per level, are not kept.
+
+    arma::uword iterations() const
+    {
+        return u_sigma_inv.n_cols > 0 ? u_sigma_inv.n_cols : u_scale.n_cols;
+    }
+    bool has_a() const { return a.n_elem > 0; }
+};
+
+/// What a block of random walks estimated under the non-centred
+/// parameterisation adds to its draws. Empty under the centred one.
+///
+/// The variance draws beside it -- `a_sigma` and the like -- are still written,
+/// as \f$\omega^2\f$, so that everything reading a random walk's variance reads
+/// it the same way whichever parameterisation produced it. See
+/// src/core/models/noncentred_support.h for the model and for what the
+/// ordinates are for.
+struct NoncentredStateDraws
+{
+    /// n x iterations: the signed standard deviations \f$\omega\f$.
+    arma::mat omega;
+
+    /// n x iterations: \f$\log p(\omega_i = 0 \mid y, \tilde x, \ldots)\f$, one
+    /// state at a time. Averaging their exponentials over the draws estimates
+    /// the posterior ordinate of the Savage-Dickey ratio for "state i does not
+    /// move".
+    arma::mat log_zero;
+
+    /// 1 x iterations: the same for the whole block at once, "none of the
+    /// states moves". Not the sum of the rows above, which are marginals of a
+    /// joint that couples them.
+    arma::mat log_zero_joint;
+
+    bool empty() const { return omega.n_elem == 0; }
+};
+
+/// Posterior draws of a VAR whose coefficients follow a random walk.
+///
+/// `a` holds a whole path per draw, which is what makes this model's output
+/// shapes differ from the others': the coefficients are time-varying, and so,
+/// when there is a covariance block, is Psi.
+struct VarTvpGammaDraws
+{
+    arma::mat a;
+    arma::mat a_sigma;
+    arma::mat a_lambda;
+    NoncentredStateDraws a_noncentred;
+
+    arma::mat psi;
+    arma::mat psi_sigma;
+    arma::mat psi_lambda;
+    NoncentredStateDraws psi_noncentred;
+
+    arma::mat u_omega_inv;
+    arma::mat u_sigma_inv;
+
+    /// (k * tt) x iterations, the panel as each draw completed it, where it was
+    /// not observed whole; see VarNormalWishartDraws::y.
+    arma::mat y;
+
+    /// G x iterations, the error precision of each soft group of the training
+    /// constraints; see VarNormalWishartDraws::constraints_inv.
+    arma::mat constraints_inv;
+
+    arma::uword iterations() const { return u_sigma_inv.n_cols; }
+    bool has_a() const { return a.n_elem > 0; }
+    bool has_psi() const { return psi.n_elem > 0; }
+    bool has_y() const { return y.n_elem > 0; }
+    bool has_constraints_inv() const { return constraints_inv.n_elem > 0; }
+};
+
+/// Posterior draws of a VAR whose coefficients follow a random walk.
+///
+/// `a` holds a whole path per draw, which is what makes this model's output
+/// shapes differ from the others': the coefficients are time-varying.
+struct VarTvpWishartDraws
+{
+    arma::mat a;
+    arma::mat a_sigma;
+    arma::mat a_lambda;
+    NoncentredStateDraws a_noncentred;
+    arma::mat u_sigma_inv;
+
+    /// (k * tt) x iterations, the panel as each draw completed it, where it was
+    /// not observed whole; see VarNormalWishartDraws::y.
+    arma::mat y;
+
+    /// G x iterations, the error precision of each soft group of the training
+    /// constraints; see VarNormalWishartDraws::constraints_inv.
+    arma::mat constraints_inv;
+
+    arma::uword iterations() const { return u_sigma_inv.n_cols; }
+    bool has_a() const { return a.n_elem > 0; }
+    bool has_y() const { return y.n_elem > 0; }
+    bool has_constraints_inv() const { return constraints_inv.n_elem > 0; }
+};
+
+/// Posterior draws of a VAR whose coefficients follow a random walk and whose
+/// errors carry stochastic volatility.
+///
+/// Both the coefficients and the error precision are paths here, which is what
+/// makes this the widest output of any of the models: `a` holds nparams * tt
+/// per draw and `u_sigma_inv` holds k * k * tt.
+struct VarTvpStochvolDraws
+{
+    arma::mat a;
+    arma::mat a_sigma;
+    arma::mat a_lambda;
+    NoncentredStateDraws a_noncentred;
+
+    arma::mat psi;
+    arma::mat psi_sigma;
+    arma::mat psi_lambda;
+    NoncentredStateDraws psi_noncentred;
+
+    /// (k * tt) x iterations: the diagonal of the precision, period by period.
+    arma::mat u_omega_inv;
+
+    /// (k * k * tt) x iterations: one vectorised precision matrix per period,
+    /// periods stacked within a column.
+    arma::mat u_sigma_inv;
+
+    /// k x iterations: the variance of the log-volatility innovations, as in
+    /// VarNormalStochvolDraws.
+    arma::mat h_sigma;
+    NoncentredStateDraws h_noncentred;
+
+    /// (k * tt) x iterations, the panel as each draw completed it, where it was
+    /// not observed whole; see VarNormalWishartDraws::y.
+    arma::mat y;
+
+    /// G x iterations, the error precision of each soft group of the training
+    /// constraints; see VarNormalWishartDraws::constraints_inv.
+    arma::mat constraints_inv;
+
+    arma::uword iterations() const { return u_sigma_inv.n_cols; }
+    bool has_a() const { return a.n_elem > 0; }
+    bool has_psi() const { return psi.n_elem > 0; }
+    bool has_y() const { return y.n_elem > 0; }
+    bool has_constraints_inv() const { return constraints_inv.n_elem > 0; }
+};
+
+
+/// Posterior draws of a VAR estimated at a conditional quantile whose
+/// coefficients follow a random walk.
+///
+/// VarNormalAldDraws with the coefficients widened to a path and their state
+/// innovation variance beside them, exactly as VarTvpStochvolDraws widens
+/// VarNormalStochvolDraws.
+struct VarTvpAldDraws
+{
+    arma::mat a;        ///< (nparams * tt) x iterations.
+    arma::mat a_sigma;  ///< nparams x iterations.
+    arma::mat a_lambda;
+    NoncentredStateDraws a_noncentred;
+
+    /// k x iterations: the scale of the asymmetric Laplace, one per equation.
+    arma::mat u_scale;
+
+    /// (k * tt) x iterations: the diagonal of the precision, period by period.
+    arma::mat u_omega_inv;
+
+    /// (k * k * tt) x iterations: one vectorised precision matrix per period,
+    /// periods stacked within a column. Diagonal throughout.
+    arma::mat u_sigma_inv;
+
+    arma::uword iterations() const { return u_sigma_inv.n_cols; }
+    bool has_a() const { return a.n_elem > 0; }
+};
+
+/// Posterior draws of a VEC with a normal prior on the coefficients and a
+/// Wishart prior on the error precision.
+///
+/// Draws run along the columns, which is the layout the samplers accumulate in
+/// and the one that keeps a single draw contiguous. The model file keeps that
+/// orientation: in HDF5 dataspace terms every posterior dataset is one row per
+/// quantity and one column per draw, which is what h5py reports. R's readers
+/// reverse the dimension order, R being column-major where HDF5 is row-major,
+/// so an R session sees the transpose -- draws in rows, which is what `coda`
+/// expects of an `mcmc` object. A host whose ecosystem wants that convention
+/// transposes at the boundary; the file itself is not transposed.
+struct VecNormalWishartDraws
+{
+    arma::mat a;          ///< nparams x iterations. Empty when the model has no regressors.
+    arma::mat a_lambda;   ///< nparams x iterations of zeros and ones. Empty unless variable
+
+    arma::mat beta;     ///< n_beta x iterations. Empty when the model has no cointegration.
+
+    /// (k * k) x iterations; each column is a vectorised precision matrix.
+    arma::mat u_sigma_inv;
+
+    /// Length of the chain these draws came from.
+    arma::uword iterations() const { return u_sigma_inv.n_cols; }
+
+    bool has_a() const { return a.n_elem > 0; }
+    bool has_beta() const { return beta.n_elem > 0; }
+    bool has_lambda() const { return a_lambda.n_elem > 0; }
+};
+
+/// Posterior draws of the non-SUR Koop, Leon-Gonzalez and Strachan (2010)
+/// sampler.
+///
+/// The same posterior VecNormalWishartDraws carries, minus the inclusion
+/// indicators: this sampler implements no variable selection. Laid out
+/// identically, `a` holding vec(alpha) first, so a draw of one is a draw of the
+/// other and the two can be compared coefficient by coefficient.
+struct VecKlgs2010Draws
+{
+    arma::mat a;    ///< n_a x iterations. Empty when the model has no regressors.
+    arma::mat beta; ///< n_beta x iterations. Empty without a cointegration relation.
+
+    /// (k * k) x iterations; each column is a vectorised precision matrix.
+    arma::mat u_sigma_inv;
+
+    /// Length of the chain these draws came from.
+    arma::uword iterations() const { return u_sigma_inv.n_cols; }
+
+    bool has_a() const { return a.n_elem > 0; }
+    bool has_beta() const { return beta.n_elem > 0; }
+};
+
+/// Posterior draws of a VEC with independent gamma priors on the error
+/// precisions and, optionally, a constant covariance block.
+struct VecNormalGammaDraws
+{
+    arma::mat a;        ///< n_a x iterations.
+    arma::mat a_lambda;
+
+    arma::mat beta;     ///< n_beta x iterations. Empty without a cointegration relation.
+
+    /// (k * k) x iterations; each column a vectorised lower-triangular Psi.
+    arma::mat psi;
+    arma::mat psi_lambda;
+
+    /// k x iterations. Only the diagonal is drawn, so only it is kept.
+    arma::mat u_omega_inv;
+
+    /// (k * k) x iterations; each column a vectorised precision matrix.
+    arma::mat u_sigma_inv;
+
+    arma::uword iterations() const { return u_sigma_inv.n_cols; }
+    bool has_a() const { return a.n_elem > 0; }
+    bool has_beta() const { return beta.n_elem > 0; }
+    bool has_psi() const { return psi.n_elem > 0; }
+    bool has_lambda() const { return a_lambda.n_elem > 0; }
+};
+
+/// Posterior draws of a VEC with stochastic volatility.
+///
+/// The coefficients are constant and the error precision is not, so `a` and
+/// `beta` hold one value per draw while `u_sigma_inv` holds a whole path.
+struct VecNormalStochvolDraws
+{
+    arma::mat a;
+    arma::mat a_lambda;
+
+    arma::mat beta;
+
+    arma::mat psi;      ///< (k * k) x iterations.
+    arma::mat psi_lambda;
+
+    /// (k * tt) x iterations: the diagonal of the precision, period by period.
+    arma::mat u_omega_inv;
+
+    /// (k * k * tt) x iterations: one vectorised precision matrix per period,
+    /// periods stacked within a column.
+    arma::mat u_sigma_inv;
+
+    /// k x iterations: the variance of the log-volatility innovations, as in
+    /// VarNormalStochvolDraws. Stored at /posterior/u_sigma_inv/sigma. A VEC's
+    /// forecast still holds its volatility at the last in-sample period and does
+    /// not read it.
+    arma::mat h_sigma;
+
+    arma::uword iterations() const { return u_sigma_inv.n_cols; }
+    bool has_a() const { return a.n_elem > 0; }
+    bool has_beta() const { return beta.n_elem > 0; }
+    bool has_psi() const { return psi.n_elem > 0; }
+    bool has_lambda() const { return a_lambda.n_elem > 0; }
+};
+
+/// Posterior draws of a VEC whose coefficients -- loadings and cointegration
+/// vectors included -- follow a random walk, with a Wishart error precision.
+struct VecTvpWishartDraws
+{
+    arma::mat a;        ///< (n_a * tt) x iterations.
+    arma::mat a_sigma;
+    arma::mat a_lambda;
+    NoncentredStateDraws a_noncentred;
+
+    arma::mat beta;     ///< (n_beta * tt) x iterations.
+
+    /// 1 x iterations: the autoregression of the cointegration state equation.
+    /// Empty unless the file put a prior on it -- it is a fixed hyperparameter
+    /// otherwise, and one the file already holds.
+    arma::mat rho;
+
+    /// (k * k) x iterations; the precision does not move with time here.
+    arma::mat u_sigma_inv;
+
+    arma::uword iterations() const { return u_sigma_inv.n_cols; }
+    bool has_a() const { return a.n_elem > 0; }
+    bool has_beta() const { return beta.n_elem > 0; }
+    bool has_rho() const { return rho.n_elem > 0; }
+};
+
+/// Posterior draws of a VEC whose coefficients -- loadings and cointegration
+/// vectors included -- follow a random walk, with independent gamma priors on
+/// the error precisions.
+///
+/// `u_sigma_inv` is (k * k) x iterations without a covariance block and
+/// (k * k * tt) x iterations with one, since Psi is then a path and the
+/// precision it implies moves with it. Same convention as VarTvpGamma.
+struct VecTvpGammaDraws
+{
+    arma::mat a;
+    arma::mat a_sigma;
+    arma::mat a_lambda;
+    NoncentredStateDraws a_noncentred;
+
+    arma::mat beta;
+
+    /// 1 x iterations: the autoregression of the cointegration state equation.
+    /// Empty unless the file put a prior on it -- it is a fixed hyperparameter
+    /// otherwise, and one the file already holds.
+    arma::mat rho;
+
+    arma::mat psi;
+    arma::mat psi_sigma;
+    arma::mat psi_lambda;
+    NoncentredStateDraws psi_noncentred;
+
+    arma::mat u_omega_inv; ///< k x iterations.
+    arma::mat u_sigma_inv;
+
+    arma::uword iterations() const { return u_sigma_inv.n_cols; }
+    bool has_a() const { return a.n_elem > 0; }
+    bool has_beta() const { return beta.n_elem > 0; }
+    bool has_rho() const { return rho.n_elem > 0; }
+    bool has_psi() const { return psi.n_elem > 0; }
+};
+
+/// Posterior draws of a VEC whose coefficients -- loadings and cointegration
+/// vectors included -- follow a random walk and whose errors carry stochastic
+/// volatility.
+///
+/// Every member but the state variances is a path: `a` holds n_a * tt per draw,
+/// `beta` holds n_beta * tt, and `u_sigma_inv` holds k * k * tt, periods stacked
+/// within a column in each case.
+struct VecTvpStochvolDraws
+{
+    arma::mat a;
+    arma::mat a_sigma;
+    arma::mat a_lambda;
+    NoncentredStateDraws a_noncentred;
+
+    /// (n_beta * tt) x iterations. Empty when the model has no cointegration
+    /// relation. `a` carries only the loadings on it, so this is the half
+    /// without which Pi cannot be reconstructed.
+    arma::mat beta;
+
+    /// 1 x iterations: the autoregression of the cointegration state equation.
+    /// Empty unless the file put a prior on it -- it is a fixed hyperparameter
+    /// otherwise, and one the file already holds.
+    arma::mat rho;
+
+    arma::mat psi;
+    arma::mat psi_sigma;
+    arma::mat psi_lambda;
+    NoncentredStateDraws psi_noncentred;
+
+    /// (k * tt) x iterations: the diagonal of the precision, period by period.
+    arma::mat u_omega_inv;
+
+    /// (k * k * tt) x iterations: one vectorised precision matrix per period,
+    /// periods stacked within a column.
+    arma::mat u_sigma_inv;
+
+    /// k x iterations: the variance of the log-volatility innovations, as in
+    /// VecNormalStochvolDraws.
+    arma::mat h_sigma;
+    NoncentredStateDraws h_noncentred;
+
+    arma::uword iterations() const { return u_sigma_inv.n_cols; }
+    bool has_a() const { return a.n_elem > 0; }
+    bool has_beta() const { return beta.n_elem > 0; }
+    bool has_rho() const { return rho.n_elem > 0; }
+    bool has_psi() const { return psi.n_elem > 0; }
+};
+
+/// Posterior draws of a dynamic factor model with independent gamma priors on
+/// both error precisions.
+///
+/// Draws run along the columns, as everywhere else here. What is unusual about
+/// this posterior is that the factors are part of it: they are unobserved
+/// states, not parameters, so there is one whole path per draw and everything
+/// downstream -- the pointwise log likelihood, the forecast -- reads it back
+/// rather than re-filtering.
+struct DfmNormalGammaDraws
+{
+    /// (k * n_factors) x iterations; each column is vec of the whole M x N
+    /// loading matrix, the fixed ones and zeros of the identifying block
+    /// included.
+    ///
+    /// Deliberately not the free elements alone, which is how the prior and the
+    /// starting value are given. A caller wants Lambda, and reshaping k x
+    /// n_factors gets it without having to know the identification rule; the
+    /// free-element ordering is an implementation detail of the draw and stops
+    /// at the edge of this struct.
+    arma::mat lambda;
+
+    /// (n_factors * tt) x iterations; each column is vec of the N x tt factor
+    /// path, periods along the columns of that matrix.
+    arma::mat factors;
+
+    /// n_factor_a x iterations, vec([A_1 .. A_p]). Empty when the factors have
+    /// no dynamics.
+    arma::mat a;
+
+    /// k x iterations. U is diagonal, so only the diagonal is drawn and only it
+    /// is kept -- same convention as VarNormalGammaDraws::u_omega_inv.
+    arma::mat u_sigma_inv;
+
+    /// n_factors x iterations; the diagonal of the factor innovation precision.
+    arma::mat v_sigma_inv;
+
+    /// (k * n) x iterations, where n is VarSpec::n: each column is vec of the
+    /// k x n matrix C of the deterministic terms of the measurement, one column
+    /// per term. Empty for a model without deterministic terms.
+    arma::mat c;
+
+    arma::uword iterations() const { return u_sigma_inv.n_cols; }
+    bool has_c() const { return c.n_elem > 0; }
+    bool has_a() const { return a.n_elem > 0; }
+    bool has_factors() const { return factors.n_elem > 0; }
+};
+
+/// Posterior draws of a dynamic factor model with stochastic volatility in both
+/// error terms.
+///
+/// DfmNormalGammaDraws with the two precisions widened from a point to a path.
+/// The names are kept rather than renamed to the `u_omega_inv` the VAR and VEC
+/// stochastic volatility models use for their diagonal: those models have both a
+/// diagonal and a full precision to tell apart, and a dynamic factor model's
+/// U and V are diagonal by assumption, so there is only one object and
+/// DfmNormalGammaDraws already named it. A caller moving between the two DFMs
+/// then finds the same fields, only wider.
+struct DfmNormalStochvolDraws
+{
+    /// (k * n_factors) x iterations; each column is vec of the whole M x N
+    /// loading matrix, the identifying block's fixed ones and zeros included.
+    arma::mat lambda;
+
+    /// (n_factors * tt) x iterations; each column is vec of the N x tt factor
+    /// path, periods along the columns of that matrix.
+    arma::mat factors;
+
+    /// n_factor_a x iterations, vec([A_1 .. A_p]). Empty when the factors have
+    /// no dynamics.
+    arma::mat a;
+
+    /// (k * tt) x iterations: the diagonal of the idiosyncratic precision,
+    /// period by period, periods stacked within a column.
+    arma::mat u_sigma_inv;
+
+    /// (n_factors * tt) x iterations: the same for the factor innovations.
+    arma::mat v_sigma_inv;
+
+    /// k x iterations and n_factors x iterations: the variances of the two
+    /// groups of log-volatility innovations -- the steps a forecast simulates
+    /// each volatility forward by. Stored at /posterior/u_sigma_inv/sigma and
+    /// /posterior/v_sigma_inv/sigma, beside the prior groups they are drawn
+    /// under.
+    arma::mat u_h_sigma;
+    arma::mat v_h_sigma;
+
+    /// (k * n) x iterations, where n is VarSpec::n: each column is vec of the
+    /// k x n matrix C of the deterministic terms of the measurement, one column
+    /// per term. Empty for a model without deterministic terms.
+    arma::mat c;
+
+    arma::uword iterations() const { return u_sigma_inv.n_cols; }
+    bool has_c() const { return c.n_elem > 0; }
+    bool has_a() const { return a.n_elem > 0; }
+    bool has_factors() const { return factors.n_elem > 0; }
+};
+
+/// Posterior draws of a dynamic factor model whose loadings and factor
+/// transition follow random walks.
+///
+/// DfmNormalGammaDraws with the two coefficient blocks widened from a point to a
+/// path, and a state variance added to each. The two precisions stay points:
+/// this model's errors are homoskedastic, and it is the coefficients that move.
+///
+/// `lambda` and `a` are the two members whose height depends on which entry
+/// point produced them, the same arrangement VarTvpGammaDraws has. The sampler
+/// and the pointwise log likelihood carry the whole path -- every period under
+/// its own coefficients -- while a forecast carries the last in-sample period
+/// alone, since that is where it starts the horizon from.
+struct DfmTvpGammaDraws
+{
+    /// (k * n_factors * tt) x iterations: one vectorised M x N loading matrix
+    /// per period, periods stacked within a column, the identifying block's
+    /// fixed ones and zeros included. Cut to k * n_factors for a forecast.
+    ///
+    /// Deliberately the whole matrix rather than the free elements the prior and
+    /// the starting value are given as, for the reason DfmNormalGammaDraws gives:
+    /// a caller wants Lambda_t, and reshaping k x n_factors gets it without
+    /// having to know the identification rule.
+    arma::mat lambda;
+
+    /// n_lambda x iterations: the variance of the loading random walks, one per
+    /// free element in the row-major order the prior uses.
+    arma::mat lambda_sigma;
+    NoncentredStateDraws lambda_noncentred;
+
+    /// (n_factors * tt) x iterations; each column is vec of the N x tt factor
+    /// path, periods along the columns of that matrix.
+    arma::mat factors;
+
+    /// (n_factor_a * tt) x iterations, one vec([A_1 .. A_p]) per period. Empty
+    /// when the factors have no dynamics; cut to n_factor_a for a forecast.
+    arma::mat a;
+
+    /// n_factor_a x iterations: the variance of the transition random walks.
+    arma::mat a_sigma;
+    NoncentredStateDraws a_noncentred;
+
+    /// k x iterations. U is diagonal, so only the diagonal is drawn and kept.
+    arma::mat u_sigma_inv;
+
+    /// n_factors x iterations; the diagonal of the factor innovation precision.
+    arma::mat v_sigma_inv;
+
+    /// (k * n) x iterations, where n is VarSpec::n: each column is vec of the
+    /// k x n matrix C of the deterministic terms of the measurement, one column
+    /// per term. Empty for a model without deterministic terms.
+    arma::mat c;
+
+    arma::uword iterations() const { return u_sigma_inv.n_cols; }
+    bool has_c() const { return c.n_elem > 0; }
+    bool has_a() const { return a.n_elem > 0; }
+    bool has_factors() const { return factors.n_elem > 0; }
+};
+
+/// Posterior draws of a dynamic factor model whose loadings, factor transition
+/// and two error covariances all move with time.
+///
+/// DfmTvpGammaDraws with the two precisions widened from a point to a path, which
+/// is exactly what DfmNormalStochvolDraws does to DfmNormalGammaDraws. Every
+/// member but the two state variances is a path, which makes this the widest
+/// output of any model here.
+///
+/// `lambda` and `a` are the members whose height depends on which entry point
+/// produced them, the same arrangement VarTvpGammaDraws has, and `u_sigma_inv`
+/// and `v_sigma_inv` are read the way DfmNormalStochvolDraws' are: whole for the
+/// pointwise log likelihood, last period alone for a forecast.
+struct DfmTvpStochvolDraws
+{
+    /// (k * n_factors * tt) x iterations: one vectorised M x N loading matrix
+    /// per period, periods stacked within a column, the identifying block's
+    /// fixed ones and zeros included. Cut to k * n_factors for a forecast.
+    arma::mat lambda;
+
+    /// n_lambda x iterations: the variance of the loading random walks, one per
+    /// free element in the row-major order the prior uses.
+    arma::mat lambda_sigma;
+    NoncentredStateDraws lambda_noncentred;
+
+    /// (n_factors * tt) x iterations; each column is vec of the N x tt factor
+    /// path, periods along the columns of that matrix.
+    arma::mat factors;
+
+    /// (n_factor_a * tt) x iterations, one vec([A_1 .. A_p]) per period. Empty
+    /// when the factors have no dynamics; cut to n_factor_a for a forecast.
+    arma::mat a;
+
+    /// n_factor_a x iterations: the variance of the transition random walks.
+    arma::mat a_sigma;
+    NoncentredStateDraws a_noncentred;
+
+    /// (k * tt) x iterations: the diagonal of the idiosyncratic precision,
+    /// period by period, periods stacked within a column.
+    arma::mat u_sigma_inv;
+
+    /// (n_factors * tt) x iterations: the same for the factor innovations.
+    arma::mat v_sigma_inv;
+
+    /// k x iterations and n_factors x iterations: the variances of the two
+    /// groups of log-volatility innovations, as in DfmNormalStochvolDraws.
+    arma::mat u_h_sigma;
+    NoncentredStateDraws u_h_noncentred;
+    arma::mat v_h_sigma;
+    NoncentredStateDraws v_h_noncentred;
+
+    /// (k * n) x iterations, where n is VarSpec::n: each column is vec of the
+    /// k x n matrix C of the deterministic terms of the measurement, one column
+    /// per term. Empty for a model without deterministic terms.
+    arma::mat c;
+
+    arma::uword iterations() const { return u_sigma_inv.n_cols; }
+    bool has_c() const { return c.n_elem > 0; }
+    bool has_a() const { return a.n_elem > 0; }
+    bool has_factors() const { return factors.n_elem > 0; }
+};
+
+/// Posterior draws of a factor augmented VAR with a Wishart prior on the
+/// precision of the state innovations.
+///
+/// DfmNormalGammaDraws with the state widened from the unobserved factors to
+/// the unobserved and observed ones together, and the factor innovation
+/// precision widened from a diagonal to a matrix. Draws run along the columns,
+/// as everywhere else here.
+///
+/// Only the unobserved half of the state is a draw. The observed half is data
+/// and is not copied into the posterior -- a caller that wants the whole state
+/// path already holds it, and storing a second copy of the input once per draw
+/// would be the largest thing in the file.
+struct FavarNormalWishartDraws
+{
+    /// (k * n_state) x iterations; each column is vec of the whole
+    /// k x n_state loading matrix [Lambda_f Lambda_y], the fixed ones and zeros
+    /// of the identifying block included.
+    ///
+    /// Deliberately not the free elements alone, which is how the prior and the
+    /// starting value are given, for the reason DfmNormalGammaDraws gives: a
+    /// caller wants Lambda, and reshaping k x n_state gets it without having to
+    /// know the identification rule.
+    arma::mat lambda;
+
+    /// (n_factors * tt) x iterations; each column is vec of the
+    /// n_factors x tt path of the *unobserved* factors, periods along the
+    /// columns of that matrix.
+    arma::mat factors;
+
+    /// n_favar_a x iterations, vec([Phi_1 .. Phi_p]) of the state transition.
+    /// Empty when the state has no dynamics.
+    arma::mat a;
+
+    /// k x iterations. R is diagonal, so only the diagonal is drawn and only it
+    /// is kept -- the convention DfmNormalGammaDraws set.
+    arma::mat u_sigma_inv;
+
+    /// (n_state * n_state) x iterations; each column is vec of the state
+    /// innovation precision Q^-1. A whole matrix, unlike every DFM's, which is
+    /// the point of this member of the family -- see FavarNormalWishartInput.
+    arma::mat v_sigma_inv;
+
+    /// (k * n) x iterations, where n is VarSpec::n: each column is vec of the
+    /// k x n matrix C of the deterministic terms of the measurement, one column
+    /// per term. Empty for a model without deterministic terms.
+    arma::mat c;
+
+    /// (n_obs_factors * n) x iterations: each column is vec of the
+    /// n_obs_factors x n matrix C_obs, the deterministic terms the observed
+    /// factors deviate from. Empty for a model without deterministic terms.
+    arma::mat c_obs;
+
+    arma::uword iterations() const { return u_sigma_inv.n_cols; }
+    bool has_c() const { return c.n_elem > 0; }
+    bool has_a() const { return a.n_elem > 0; }
+    bool has_factors() const { return factors.n_elem > 0; }
+};
+
+/// Simulated forecast paths, (h * k) x draws: one column per posterior draw,
+/// horizons stacked within a column in the same variable order as the sample.
+///
+/// A factor augmented VAR is the one model here whose forecast is wider than
+/// `k`: it stacks (h * (k + n_obs_factors)), the panel of one horizon followed
+/// by the observed factors of that horizon. The observed factors are what a
+/// FAVAR is forecast for, and this is the only dataset that could carry them.
+struct ForecastDraws
+{
+    arma::mat values;
+};
+
+
+/// The posterior of a discounted time varying parameter VAR.
+///
+/// Not draws. Every other result struct in this file holds one column per
+/// iteration; this one holds the posterior itself, which is closed form here:
+/// per period a matrix Student t over the coefficients and an inverse Wishart
+/// over the error covariance, both exact. One column per period throughout, as
+/// a draw is one column elsewhere.
+///
+/// `a_cov` is the regressor side of the coefficient covariance and `u_sigma`
+/// the error side, so the two together give the joint posterior and not only
+/// the marginal bands in `a_scale`. Anything that wants draws -- an impulse
+/// response, a forecast fan -- builds them from those two, and they are i.i.d.
+/// rather than a chain: there is nothing to burn in and nothing to thin.
+///
+/// Those draws are correct **per period**. The smoothed posterior is not
+/// independent across periods, so joining one draw per period into a
+/// trajectory is not a draw of the path, and anything needing a coherent path
+/// has to sample it backwards instead.
+struct VarTvpDiscountPosterior
+{
+    arma::mat a;         ///< nparams x tt, the posterior mean of vec(B_t).
+    arma::mat a_scale;   ///< nparams x tt, the marginal Student t scale.
+    arma::mat a_cov;     ///< n_reg * n_reg x tt, the regressor side of it.
+    arma::mat u_sigma;   ///< k * k x tt, the posterior estimate of Sigma_t.
+    arma::vec df;        ///< tt, the degrees of freedom of both of the above.
+
+    arma::mat forecast_mean; ///< k x tt, the one step ahead predictive mean.
+    arma::vec loglik;        ///< tt, its exact log density at what happened.
+
+    arma::uword periods() const { return u_sigma.n_cols; }
+};
+
+/// The posterior of a discounted time varying parameter VEC.
+///
+/// VarTvpDiscountPosterior with the cointegration matrix carried alongside, and
+/// everything that struct says about the shape of it holds here: a posterior
+/// rather than draws, one column per period, exact.
+///
+/// `a` is laid out as every VEC's is -- vec(alpha) first, then the short-run
+/// blocks -- because the design puts the `rank` error correction columns in
+/// front. So a column of it is a column of a VecNormalWishart posterior, and
+/// vec_to_var_coefficients() converts it to the level VAR without a
+/// rearrangement.
+///
+/// **`beta` is copied in from the input rather than estimated**, and it is here
+/// so that a stored posterior says which space it conditioned on. Without it
+/// the loadings are numbers with no relation attached: alpha and beta are
+/// identified only as their product, so alpha alone means nothing. Constant
+/// over the sample by construction -- one column, not one per period, which is
+/// the difference from the three sampling VECs.
+struct VecTvpDiscountPosterior
+{
+    arma::mat a;       ///< nparams x tt, the posterior mean of vec(B_t).
+    arma::mat a_scale; ///< nparams x tt, the marginal Student t scale.
+    arma::mat a_cov;   ///< n_design * n_design x tt, the regressor side of it.
+    arma::mat u_sigma; ///< k * k x tt, the posterior estimate of Sigma_t.
+    arma::vec df;      ///< tt, the degrees of freedom of both of the above.
+
+    arma::vec beta; ///< n_beta, the space the run conditioned on. Empty at rank zero.
+
+    arma::mat forecast_mean; ///< k x tt, the one step ahead predictive mean.
+    arma::vec loglik;        ///< tt, its exact log density at what happened.
+
+    arma::uword periods() const { return u_sigma.n_cols; }
+    bool has_beta() const { return beta.n_elem > 0; }
+};
+
+/// Posterior draws of an unobserved components model with gamma priors on the
+/// precisions of its shocks.
+///
+/// The trend is unobserved, so like a factor model's factors it is drawn whole
+/// every sweep and kept beside the parameters. The cycle is not kept: it is
+/// y - trend, exactly, and storing it would be storing the data twice.
+struct UcNormalGammaDraws
+{
+    /// (k * tt) x iterations; each column is vec of the k x tt trend path,
+    /// periods along the columns of that matrix.
+    arma::mat trend;
+
+    /// (k * k * p) x iterations; each column is vec([Phi_1 .. Phi_p]), the
+    /// whole k x kp matrix, the zeros off the diagonal under UcCycle::own
+    /// included -- as DfmNormalGammaDraws::lambda keeps the fixed part of the
+    /// loadings, so that reshaping gives the matrix without knowing the rule.
+    /// Empty when the cycle has no lags.
+    arma::mat a;
+
+    /// (k * n) x iterations, vec(C). Empty for a model without deterministic
+    /// terms.
+    arma::mat c;
+
+    /// (k * uc_trend_order()) x iterations: tau_0, and tau_{-1} after it for a
+    /// smooth trend.
+    arma::mat tau0;
+
+    /// (2k * 2k) x iterations; each column a vectorised lower-triangular Psi.
+    /// Empty without a covariance block.
+    arma::mat psi;
+
+    /// 2k x iterations, the diagonal of Omega.
+    arma::mat u_omega_inv;
+
+    /// (2k * 2k) x iterations, the precision of the shocks, Psi' Omega Psi.
+    arma::mat u_sigma_inv;
+
+    /// With an irregular component (VarSpec::irregular): the cycle path, (k *
+    /// tt) x iterations like `trend` -- no longer y minus the trend, so drawn
+    /// and kept -- and the irregular precisions, k x iterations. Both empty
+    /// without one.
+    arma::mat cycle;
+    arma::mat irregular_inv;
+
+    arma::uword iterations() const { return u_sigma_inv.n_cols; }
+    bool has_a() const { return a.n_elem > 0; }
+    bool has_c() const { return c.n_elem > 0; }
+    bool has_psi() const { return psi.n_elem > 0; }
+    bool has_trend() const { return trend.n_elem > 0; }
+};
+
+/// Posterior draws of an unobserved components model with a Wishart prior on
+/// the shock precision: UcNormalGammaDraws without the covariance block and its
+/// diagonal, the precision being drawn whole.
+struct UcNormalWishartDraws
+{
+    arma::mat trend; ///< (k * tt) x iterations, vec of the k x tt trend path.
+    arma::mat cycle; ///< (k * tt) x iterations with an irregular component; empty without.
+    arma::mat a;     ///< (k * k * p) x iterations, vec([Phi_1 .. Phi_p]). Empty at p = 0.
+    arma::mat c;     ///< (k * n) x iterations, vec(C). Empty without deterministic terms.
+    arma::mat tau0;  ///< (k * uc_trend_order()) x iterations.
+
+    /// (2k * 2k) x iterations, the precision of the shocks.
+    arma::mat u_sigma_inv;
+
+    arma::mat irregular_inv; ///< k x iterations with an irregular component; empty without.
+
+    arma::uword iterations() const { return u_sigma_inv.n_cols; }
+    bool has_trend() const { return trend.n_elem > 0; }
+};
+
+/// Posterior draws of an unobserved components model with stochastic
+/// volatility on its shocks. The precision is a path, so like
+/// VarNormalStochvolDraws a draw of it is one matrix per period.
+struct UcNormalStochvolDraws
+{
+    arma::mat trend; ///< (k * tt) x iterations.
+    arma::mat cycle; ///< (k * tt) x iterations with an irregular component; empty without.
+    arma::mat a;     ///< (k * k * p) x iterations. Empty at p = 0.
+    arma::mat c;     ///< (k * n) x iterations. Empty without deterministic terms.
+    arma::mat tau0;  ///< (k * uc_trend_order()) x iterations.
+
+    /// (2k * 2k) x iterations, the constant Psi. Empty without a covariance block.
+    arma::mat psi;
+
+    /// (2k * tt) x iterations: exp(-h_t), the diagonal of Omega_t, period by
+    /// period.
+    arma::mat u_omega_inv;
+
+    /// (2k * 2k * tt) x iterations: Psi' Omega_t Psi, one precision per period.
+    arma::mat u_sigma_inv;
+
+    /// 2k x iterations, the variance of the log-volatility innovations -- the
+    /// square of `h_noncentred.omega` under the non-centred parameterisation.
+    arma::mat h_sigma;
+
+    /// The non-centred parameterisation's omega and Savage-Dickey ordinates.
+    /// Empty under the centred one.
+    NoncentredStateDraws h_noncentred;
+
+    arma::mat irregular_inv; ///< k x iterations with an irregular component; empty without.
+
+    arma::uword iterations() const { return u_sigma_inv.n_cols; }
+    bool has_trend() const { return trend.n_elem > 0; }
+    bool has_psi() const { return psi.n_elem > 0; }
+};
+
+/// Posterior draws of an unobserved components model with skewed shocks.
+struct UcNormalSkewDraws
+{
+    arma::mat trend; ///< (k * tt) x iterations.
+    arma::mat cycle; ///< (k * tt) x iterations with an irregular component; empty without.
+    arma::mat a;     ///< (k * k * p) x iterations. Empty at p = 0.
+    arma::mat c;     ///< (k * n) x iterations. Empty without deterministic terms.
+    arma::mat tau0;  ///< (k * uc_trend_order()) x iterations.
+
+    /// (k * 2 (1 + n_skew)) x iterations: the scale coefficients, laid out as
+    /// UcNormalSkewInitial::skew.
+    arma::mat skew;
+
+    /// (k * tt) x iterations: each skewed shock's latent variate, the half
+    /// normal of the skew normal or the unit exponential of the asymmetric
+    /// Laplace, by period. Part of the posterior because the log likelihood
+    /// conditions on it.
+    arma::mat skew_latent;
+
+    /// k x iterations, the precision of the shock that is not skewed.
+    arma::mat u_omega_inv;
+
+    arma::mat irregular_inv; ///< k x iterations with an irregular component; empty without.
+
+    arma::uword iterations() const { return u_omega_inv.n_cols; }
+    bool has_trend() const { return trend.n_elem > 0; }
+};
+
+} // namespace bayests
+
+#endif // BAYESTS_RESULTS_H

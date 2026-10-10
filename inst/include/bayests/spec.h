@@ -1,0 +1,573 @@
+// SPDX-License-Identifier: BSD-3-Clause
+// Copyright (c) 2026 Franz X. Mohr
+
+#ifndef BAYESTS_SPEC_H
+#define BAYESTS_SPEC_H
+
+#include <string>
+#include <vector>
+
+namespace bayests
+{
+
+/// Which variable selection scheme, if any, the sampler applies to the
+/// coefficients in `a`.
+enum class VarSelection
+{
+    none, ///< All regressors stay in the model.
+    ssvs, ///< Stochastic search variable selection.
+    bvs   ///< Bayesian variable selection.
+};
+
+/// Parses the spelling used on disk and at the R level. Throws
+/// std::invalid_argument on anything else, rather than silently disabling
+/// selection because a name was misspelled.
+VarSelection var_selection_from_string(const std::string &name);
+
+/// Inverse of var_selection_from_string.
+const char *to_string(VarSelection selection);
+
+/// How the prior variance of the coefficients adapts to the data, if at all.
+/// Each scheme keeps the file's prior precision as every coefficient's base
+/// scale and rescales it every sweep by quantities drawn from their own
+/// conditional posteriors; see ShrinkagePrior.
+enum class Shrinkage
+{
+    none,      ///< The prior as given.
+    minnesota,   ///< One scale per group of coefficients, inverse gamma a priori.
+    horseshoe,   ///< A global scale per group and a local one per coefficient.
+    normal_gamma ///< Gamma local variances under a gamma global rate per group.
+};
+
+/// "none", "minnesota", "horseshoe" or "normal_gamma"; throws
+/// std::invalid_argument otherwise.
+Shrinkage shrinkage_from_string(const std::string &name);
+
+/// Inverse of shrinkage_from_string.
+const char *to_string(Shrinkage shrinkage);
+
+/// What a forecast does with the quantities a time-varying model lets drift --
+/// its coefficients, its covariance block, its log-volatilities -- over the
+/// horizon.
+enum class ForecastStates
+{
+    /// Each draw's random walks are carried forward, one innovation per horizon,
+    /// so the forecast is the predictive distribution of the model that was
+    /// estimated.
+    simulate,
+
+    /// Each draw's states are held at their last in-sample values for every
+    /// horizon: the forecast conditional on no drift after the end of the
+    /// sample, which is what every forecast here was before the choice existed.
+    hold
+};
+
+/// Parses the spelling used on disk. An empty name is the default, `simulate`;
+/// anything else that is not `simulate` or `hold` throws.
+ForecastStates forecast_states_from_string(const std::string &name);
+
+/// Inverse of forecast_states_from_string.
+const char *to_string(ForecastStates states);
+
+/// How the trend of an unobserved components model moves.
+///
+///     random_walk:  tau_t = tau_{t-1} + C d_t + u^tau_t,
+///     smooth:       tau_t = 2 tau_{t-1} - tau_{t-2} + C d_t + u^tau_t.
+///
+/// The first is the trend of Clark (1987) and of Morley, Nelson and Zivot
+/// (2003), with the drift C d_t -- a constant, or a constant that breaks at a
+/// known date -- in the deterministic terms. The second is the integrated
+/// random walk, whose *slope* is the random walk: the smooth trend of the
+/// Hodrick-Prescott filter, and of the output gap model in Chan, Koop, Poirier
+/// and Tobias (2019, ch. 18).
+enum class UcTrend
+{
+    random_walk, ///< "rw": first differences of the trend are the shocks.
+    smooth       ///< "smooth": second differences of the trend are the shocks.
+};
+
+/// Parses the spelling used on disk. An empty name is the default,
+/// `random_walk`; anything else that is not `rw` or `smooth` throws.
+UcTrend uc_trend_from_string(const std::string &name);
+
+/// Inverse of uc_trend_from_string.
+const char *to_string(UcTrend trend);
+
+/// Which lags the cycle of an unobserved components model regresses on.
+enum class UcCycle
+{
+    var, ///< "var": each cycle on p lags of every cycle, a VAR(p).
+    own  ///< "own": each cycle on p lags of itself only, k separate AR(p)s.
+};
+
+/// Parses the spelling used on disk. An empty name is the default, `var`;
+/// anything else that is not `var` or `own` throws.
+UcCycle uc_cycle_from_string(const std::string &name);
+
+/// Inverse of uc_cycle_from_string.
+const char *to_string(UcCycle cycle);
+
+/// The asymmetric distribution of UcNormalSkew's skewed shocks, after Huang,
+/// Luo and Wang (2026).
+enum class UcSkew
+{
+    /// "snd": the skew normal, v_t - u_t with v_t ~ N(0, sigma_v^2) and u_t
+    /// half normal of scale sigma_u -- skewed to the left.
+    snd,
+    /// "ald": the asymmetric Laplace, r_t - w_t with r_t and w_t exponential of
+    /// means lambda_r and lambda_w -- skewed to either side.
+    ald
+};
+
+/// "snd" (or empty) or "ald"; throws otherwise.
+UcSkew uc_skew_from_string(const std::string &name);
+
+/// Inverse of uc_skew_from_string.
+const char *to_string(UcSkew skew);
+
+/// Which of UcNormalSkew's shocks is skewed: the cycle's, which is where Huang,
+/// Luo and Wang find the asymmetry of US output, or the trend's.
+enum class UcSkewShock
+{
+    cycle, ///< "cycle"
+    trend  ///< "trend"
+};
+
+/// "cycle" (or empty) or "trend"; throws otherwise.
+UcSkewShock uc_skew_shock_from_string(const std::string &name);
+
+/// Inverse of uc_skew_shock_from_string.
+const char *to_string(UcSkewShock shock);
+
+/// The shape of the model, independent of the data and the priors.
+struct VarSpec
+{
+    int k = 0; ///< Endogenous variables.
+    int p = 0; ///< Lags of the endogenous variables.
+    int m = 0; ///< Exogenous variables.
+    int s = 0; ///< Lags of the exogenous variables.
+    int n = 0; ///< Deterministic terms entering unrestricted.
+    int h = 0; ///< Forecast horizon; 0 when no forecast was requested.
+
+    /// Rank of the cointegration matrix. Zero for a VAR, and zero as well for
+    /// a VEC estimated without a cointegration relation -- which is what makes
+    /// the difference between a `beta` that is absent and one that is empty.
+    int rank = 0;
+    int k_beta = 0;
+
+    /// Unobserved factors a dynamic factor model carries, the N of
+    ///
+    ///     x_t = Lambda f_t + C d_t + u_t,   f_t = sum_j A_j f_{t-j} + v_t.
+    ///
+    /// Zero for every model that is not a factor model, exactly as `rank` is
+    /// zero for every model that is not a VEC. A factor model reads the rest of
+    /// this struct its own way and only three other fields carry a meaning for
+    /// one: `k` is the number of *observed* series, the M above, `p` is the
+    /// lag order of the factor transition, and `n` is the number of
+    /// deterministic terms d_t, which enter the measurement rather than a
+    /// regression. `m`, `s`, `rank` and `n_restricted` are all zero.
+    int n_factors = 0;
+
+    /// Observed factors a factor augmented VAR carries, the Ky of
+    ///
+    ///     x_t = Lambda_f f_t + Lambda_y y_t + C d_t + e_t,
+    ///     s_t = sum_j Phi_j s_{t-j} + v_t,   s_t = (f_t', (y_t - C_obs d_t)')'.
+    ///
+    /// Zero for every model that is not a FAVAR, a dynamic factor model
+    /// included -- which is exactly what a FAVAR with none of them would be.
+    ///
+    /// `y_t` is data and not a state to draw, and it sits in the state vector
+    /// regardless: the transition is a VAR over the two blocks jointly, and that
+    /// coupling is the whole of what separates this from the DFM beside it. It
+    /// is why a FAVAR's state path draw conditions rather than draws, and why
+    /// `n_state()` rather than `n_factors` is the width of everything the
+    /// transition touches.
+    int n_obs_factors = 0;
+
+    /// Deterministic terms restricted to the cointegration space. Zero for a
+    /// VAR. The unrestricted ones are counted by `n`, so the two never overlap
+    /// and a VEC's deterministic terms are `n + n_restricted`.
+    int n_restricted = 0;
+
+    int iterations = 0; ///< Draws kept.
+    int burnin = 0;     ///< Draws discarded before the first kept one.
+
+    /// One draw kept for every `thin` run after the burn-in -- the last of each
+    /// block of `thin`, so the chain ends on a kept draw and none is run for
+    /// nothing. It is what lets a slowly mixing chain run long without the kept
+    /// draws, which every result is sized by, growing with it. 1 keeps every
+    /// draw, and is what every model was before the field existed.
+    int thin = 1;
+
+    VarSelection varsel = VarSelection::none;
+
+    /// How the prior variance of `a` adapts, if at all. Read by the three
+    /// constant-coefficient Gaussian VARs -- VarNormalWishart, VarNormalGamma and
+    /// VarNormalStochvol -- and refused by every other algorithm, and by those
+    /// three together with variable selection, a structural form or n_iid, each
+    /// of which rearranges the prior the scales act on.
+    Shrinkage shrinkage = Shrinkage::none;
+
+    /// Whether every draw of the coefficients has to describe a stationary VAR:
+    /// a draw whose companion matrix has an eigenvalue of modulus one or more is
+    /// drawn again. Read by the same three algorithms, and by UcNormalGamma for
+    /// its cycle, and refused by the rest.
+    bool stationary = false;
+
+    /// Whether the prior is on the unconditional mean rather than the intercept
+    /// -- the steady-state prior of Villani (2009): /priors/mu holds a normal
+    /// prior on mu, and the intercept (I - sum_j A_j) mu it implies is written
+    /// into `a`. Read by the same three algorithms, for a model of p lags and an
+    /// intercept only, and refused by the rest.
+    bool steady_state = false;
+
+    /// Whether the error specification asks for a covariance block -- the
+    /// "+covar" suffix the files carry. Which prefix it had, "gamma" or "sv",
+    /// identifies the model and so is the reader's business, not the sampler's:
+    /// by the time a sampler sees this, it already knows which one it is.
+    bool covar = false;
+
+    /// Structural model: the last k(k-1)/2 entries of `a` are contemporaneous
+    /// coefficients rather than lag or deterministic terms, and are split off
+    /// before a forecast path is simulated.
+    bool structural = false;
+
+    /// Endogenous variables, ordered first, whose equations carry no
+    /// coefficients at all: no lags of anything, no deterministic terms,
+    /// nothing. They are white noise, and reach the rest of the model only
+    /// through the error covariance.
+    ///
+    /// That is what makes a high-frequency surprise a variable of a monthly VAR
+    /// rather than an instrument outside it -- Jarocinski and Karadi (2020). A
+    /// surprise is unforecastable by construction, so every coefficient in its
+    /// equation is zero by assumption rather than by estimation, and what the
+    /// model is estimated for is the contemporaneous correlation between it and
+    /// the errors of the equations that do have dynamics.
+    ///
+    /// Zero for every other model. The restricted variables have to be ordered
+    /// first, which is what makes the restriction a property of a position in
+    /// `a` rather than a list of positions, and is how the data are ordered in
+    /// the application the feature comes from anyway.
+    ///
+    /// Read by the constant-coefficient VARs: `VarNormalWishart`,
+    /// `VarNormalGamma`, `VarNormalStochvol` and `VarNormalAld`. Every other
+    /// algorithm refuses a non-zero value rather than ignoring it, and so do
+    /// those four together with a structural form, whose contemporaneous block
+    /// is laid out by a different rule, or with variable selection, which is a
+    /// second way of switching a coefficient off.
+    int n_iid = 0;
+
+    /// What a forecast does with the states of a time-varying model. Read by the
+    /// forecasts of every model with something that drifts: VarTvpWishart,
+    /// VarTvpGamma, VarTvpStochvol, VarNormalStochvol, VecTvpWishart,
+    /// VecTvpGamma, VecTvpStochvol, VecNormalStochvol, DfmNormalStochvol,
+    /// DfmTvpGamma, DfmTvpStochvol and UcNormalStochvol. A model whose coefficients and precision
+    /// are constant has nothing to carry, and the two values coincide for it.
+    ForecastStates forecast_states = ForecastStates::simulate;
+
+    /// The quantile a quantile regression model estimates, in (0, 1). The only
+    /// field here that is not an integer, and the only one a model may leave at
+    /// its default while still being well specified: every model that is not an
+    /// asymmetric Laplace one ignores it, and the ALD samplers are the only ones
+    /// whose validate() checks the range.
+    ///
+    /// One quantile per model file rather than a vector, so that a grid of
+    /// quantiles is a list of models -- which is what the R level already does
+    /// with a vector of lag orders, and which lets the grid be run in parallel
+    /// without the sampler knowing.
+    double quantile = 0.5;
+
+    /// A grid of quantiles, strictly increasing in (0, 1), which turns
+    /// VarNormalAld into a structural quantile VAR (Chavleishvili and Manganelli
+    /// 2019): every quantile of the grid is estimated, and together they describe
+    /// each equation's whole conditional distribution, which a forecast can then
+    /// simulate. Empty for every other file, and `quantile` is read instead.
+    /// Only VarNormalAld reads it; see VarNormalAldSampler.
+    std::vector<double> quantiles;
+
+    /// Where a quantile grid forecasts, the quantile level every draw of the
+    /// simulation is taken at, in (0, 1) -- the quantile paths Chavleishvili and
+    /// Manganelli build impulse responses from. Zero, the default, draws the
+    /// levels at random, which simulates the predictive distribution.
+    double forecast_quantile = 0.0;
+
+    /// Whether `quantiles` holds a grid.
+    bool uses_quantile_grid() const { return !quantiles.empty(); }
+
+    /// The two discount factors of `VarTvpDiscount`, each in (0, 1]. Like
+    /// `quantile` they are continuous and every other model ignores them, and
+    /// like it a grid of them is a list of models rather than a vector here.
+    ///
+    /// One is not a neutral default but a meaningful model: `delta_beta = 1`
+    /// holds the coefficients constant and `delta_sigma = 1` holds the error
+    /// covariance constant, and both at one is the conjugate normal inverse
+    /// Wishart posterior of a constant coefficient VAR -- computed one period
+    /// at a time rather than approximated.
+    double delta_beta = 1.0;
+    double delta_sigma = 1.0;
+
+    /// The trend and the cycle of an unobserved components model,
+    ///
+    ///     y_t = tau_t + c_t,   c_t = sum_{j=1..p} Phi_j c_{t-j} + u^c_t,
+    ///
+    /// with tau_t as UcTrend says. Every other model ignores both, as every
+    /// model but the discounted pair ignores `delta_beta`. An unobserved
+    /// components model reads the rest of this struct its own way: `k` is the
+    /// number of series, each with a trend and a cycle of its own, `p` the order
+    /// of the cycle -- zero leaves it white noise, which is the local level model
+    /// -- and `n` the number of deterministic terms d_t, which enter the trend's
+    /// *increment* as its drift rather than the level. `m`, `s`, `rank` and the
+    /// factor counts are all zero.
+    UcTrend trend = UcTrend::random_walk;
+    UcCycle cycle = UcCycle::var;
+
+    /// Whether an unobserved components model has an irregular component,
+    /// y_t = tau_t + c_t + eps_t with eps_t ~ N(0, diag(sigma_eps^2)) independent
+    /// of the trend and cycle shocks -- the third component of Harvey's (1989)
+    /// basic structural model and of Huang, Luo and Wang (2026). The cycle is
+    /// then a state of its own rather than y minus the trend. It needs a cycle
+    /// with lags: at p = 0 the cycle is white noise too, and the two cannot be
+    /// told apart. Every other model ignores it.
+    bool irregular = false;
+
+    /// UcNormalSkew's distribution and which shock it applies to; every other
+    /// model ignores both.
+    UcSkew skew = UcSkew::snd;
+    UcSkewShock skew_shock = UcSkewShock::cycle;
+
+    /// Total length of the chain: the burn-in, then `thin` draws for every one
+    /// kept.
+    int draws() const { return burnin + iterations * thin; }
+
+    /// Whether the chain keeps its `draw`-th draw, counted from zero at the start
+    /// of the burn-in. At thin = 1 this is `draw >= burnin`, which is what every
+    /// sampler tested before thinning existed -- so a chain that does not thin
+    /// consumes the generator exactly as it did.
+    bool keeps(int draw) const { return draw >= burnin && (draw - burnin + 1) % thin == 0; }
+
+    /// The column a kept draw goes in: `draw - burnin` at thin = 1.
+    int kept_index(int draw) const { return (draw - burnin) / thin; }
+
+    bool uses_varsel() const { return varsel != VarSelection::none; }
+
+    /// Whether any equation is restricted to carry no coefficients at all.
+    bool uses_iid() const { return n_iid > 0; }
+
+    /// Whether the model carries a Psi block. One variable has no off-diagonal
+    /// covariance to model, so the flag on its own is not enough.
+    bool uses_covar() const { return covar && k > 1; }
+
+    /// Free elements of the lower triangle of Psi: k(k-1)/2, and zero unless
+    /// the model has a covariance block.
+    int n_psi() const { return uses_covar() ? k * (k - 1) / 2 : 0; }
+
+    /// Contemporaneous coefficients carried at the end of `a`.
+    int n_structural() const { return structural ? k * (k - 1) / 2 : 0; }
+
+    /// Regressors a VAR has per equation: p lags of the endogenous variables,
+    /// x_t together with s lags of it, and the n deterministic terms.
+    ///
+    /// One column each, which is the compact per-period layout TrainData::x and
+    /// ForecastData::x are written in and the width a k x n coefficient matrix
+    /// has. The SUR layout spreads every one of them over k columns, so
+    /// n_non_structural() is k times this. Paired with n_x_vec(), which counts
+    /// the same thing for a VEC.
+    int n_x() const { return k * p + m * (s + 1) + n; }
+
+    /// Coefficients of a VAR that are not contemporaneous terms. Declared from
+    /// the model's dimensions rather than counted off `z`, because a forecast
+    /// runs from the posterior alone and has no `z` to count.
+    ///
+    /// A VAR regresses on p lags of the endogenous variables and on x_t together
+    /// with s lags of it. A VEC does not -- see n_non_structural_vec().
+    int n_non_structural() const { return k * n_x(); }
+
+    /// Whether the model carries a cointegration relation to draw. Zero rank
+    /// leaves `beta` out of the posterior rather than storing an empty one.
+    bool uses_coint() const { return rank > 0; }
+
+    /// Free elements of `beta`: k_beta x rank, and zero unless the model has a
+    /// cointegration relation.
+    int n_beta() const { return k_beta * rank; }
+
+    /// Loading coefficients carried at the front of `a`, and zero unless the
+    /// model has a cointegration relation.
+    int n_alpha() const { return k * rank; }
+
+    /// Coefficients a VAR draw carries for one period, contemporaneous terms
+    /// included. This is the width a stored coefficient path is cut into, so a
+    /// host slicing one needs exactly this number and cannot recover it from the
+    /// stored width alone.
+    ///
+    /// The loading term is included and is zero for every VAR, which is the only
+    /// sense in which this is shared with a VEC: the *rest* of a VEC's count
+    /// differs, so use nparams_per_period_vec() for one. Reading `p` and `s` as a
+    /// VEC's own block counts is the mistake this pair of names exists to
+    /// prevent.
+    int nparams_per_period() const { return n_alpha() + n_non_structural() + n_structural(); }
+
+    /// Lagged-difference blocks a VEC carries, Gamma_1..Gamma_{p-1}.
+    ///
+    /// `p` is the lag order of the *level* representation, the convention
+    /// bvartools uses at the R level and the one the model files are written
+    /// with, so differencing costs one block. A VEC of level order one has no
+    /// Gamma at all.
+    int n_gamma() const { return p > 1 ? p - 1 : 0; }
+
+    /// Difference blocks of the unmodelled variables a VEC carries,
+    /// Upsilon_0..Upsilon_{s-1}, the current difference dx_t included.
+    ///
+    /// `s` is a level order for the same reason `p` is, so there are s of these
+    /// against the s + 1 level blocks x_t..x_{t-s} they imply.
+    int n_upsilon() const { return m > 0 ? s : 0; }
+
+    /// Regressors a VEC has besides its error correction term: the k(p-1)
+    /// lagged differences of the endogenous variables, the m*s differences of
+    /// the unmodelled ones and the n unrestricted deterministic terms.
+    ///
+    /// One column each, which is the compact per-period layout TrainData::x is
+    /// written in and the width a k x n coefficient matrix has. The SUR layout
+    /// spreads every one of them over k columns, so n_non_structural_vec() is k
+    /// times this.
+    int n_x_vec() const { return k * n_gamma() + m * n_upsilon() + n; }
+
+    /// Coefficients of a VEC that are not loadings or contemporaneous terms:
+    /// the Gamma blocks, the Upsilon blocks and the unrestricted deterministic
+    /// terms. The restricted ones live in `beta`, not here.
+    int n_non_structural_vec() const { return k * n_x_vec(); }
+
+    /// Coefficients a VEC draw carries for one period, loadings and
+    /// contemporaneous terms included -- the width of its `a`, and the number of
+    /// columns its `z` has.
+    int nparams_per_period_vec() const
+    {
+        return n_alpha() + n_non_structural_vec() + n_structural();
+    }
+
+    /// Whether the model carries unobserved factors to draw.
+    bool uses_factors() const { return n_factors > 0; }
+
+    /// Free elements of a DFM's M x N loading matrix.
+    ///
+    /// Lambda is not free throughout: only the product Lambda f_t is identified,
+    /// so its leading N x N block is fixed unit lower triangular -- ones on the
+    /// diagonal, zeros above -- which pins both the rotation and the scale of the
+    /// factors. That leaves min(i, N) free elements in row i, and summing them
+    /// over the M rows gives N(2M - N - 1)/2.
+    ///
+    /// Zero unless the model has factors, and zero as well if `n_factors`
+    /// exceeds `k`, which is not a model -- validate() rejects it, and this
+    /// declines to return a negative count in the meantime.
+    int n_lambda() const
+    {
+        return (uses_factors() && n_factors <= k) ? n_factors * (2 * k - n_factors - 1) / 2 : 0;
+    }
+
+    /// Coefficients of a DFM's factor transition, vec([A_1 .. A_p]). Zero when
+    /// the factors carry no dynamics of their own.
+    int n_factor_a() const { return n_factors * n_factors * p; }
+
+    /// Whether the model carries observed factors beside the unobserved ones.
+    bool uses_obs_factors() const { return n_obs_factors > 0; }
+
+    /// Elements of the state vector a FAVAR's transition runs over: the
+    /// unobserved factors and the observed ones together. Equal to `n_factors`
+    /// for a DFM, which is the case of none of the second kind.
+    int n_state() const { return n_factors + n_obs_factors; }
+
+    /// Free elements of a FAVAR's k x n_state loading matrix: the whole width of
+    /// every row from `n_factors` on, and nothing at all before that, so
+    /// (k - n_factors) n_state.
+    ///
+    /// The leading block is fixed, as in a DFM, and it is fixed *harder*: the
+    /// n_factors square block of the factor columns is the identity rather than
+    /// a unit lower triangle, and the observed columns of those same rows are
+    /// zero. The first n_factors series of the panel are therefore the factors
+    /// plus idiosyncratic noise and nothing else.
+    ///
+    /// That is not a stylistic difference from n_lambda(), and the two counts
+    /// are not interchangeable. A rotation F -> C F leaves the measurement
+    /// alone if Lambda_f absorbs it, so something has to rule C out. A dynamic
+    /// factor model rules it out with two restrictions at once -- a unit lower
+    /// triangular block and a *diagonal* V, which together admit only C = I,
+    /// the uniqueness of an LDL factorisation. A FAVAR cannot use the second
+    /// half of that: its Q is unrestricted by design, that being the whole point
+    /// of the model. A unit lower triangular block alone leaves every unit lower
+    /// triangular C admissible, and the model is then not identified -- it runs,
+    /// it produces plausible numbers, and its loadings wander along a ridge. The
+    /// identity block rules out C on its own, which is why Bernanke, Boivin and
+    /// Eliasz use it and why this does.
+    ///
+    /// The two restrictions cost the same. A unit triangle leaves
+    /// n_factors(n_factors - 1)/2 loadings free and spends that many on making V
+    /// diagonal; the identity spends them on the loadings and leaves Q free.
+    ///
+    /// Paired with n_lambda() rather than replacing it, the way
+    /// n_non_structural_vec() is paired with n_non_structural(): reading a
+    /// FAVAR's loadings off the DFM's count is the mistake the pair exists to
+    /// prevent.
+    ///
+    /// It is not a mistake a length check will catch for you. The two differ by
+    ///
+    ///     n_lambda() - n_favar_lambda() = n(n - 1)/2 - (k - n) n_obs,
+    ///
+    /// which is zero on a whole family of dimensions rather than nowhere. With
+    /// one observed factor it vanishes at every k = n(n + 1)/2 -- (k, n, n_obs)
+    /// of (3, 2, 1), (6, 3, 1), (10, 4, 1), (15, 5, 1) and on up -- and beyond
+    /// that wherever (k - n) n_obs happens to hit n(n - 1)/2, as (4, 3, 3) and
+    /// (7, 4, 2) do. At those dimensions a /priors/lambda laid out to the DFM's
+    /// unit lower triangular convention has exactly the length a FAVAR's
+    /// validate() asks for, passes it, and is then read row by row as something
+    /// it is not: the chain runs to completion and estimates a different model.
+    /// Which count applies is decided by which model the file is, never by
+    /// which one its lambda happens to fit.
+    ///
+    /// Zero unless the model has factors, and zero as well if `n_factors`
+    /// exceeds `k`, on the same grounds as n_lambda().
+    int n_favar_lambda() const
+    {
+        return (uses_factors() && n_factors <= k) ? (k - n_factors) * n_state() : 0;
+    }
+
+    /// Coefficients of a FAVAR's state transition, vec([Phi_1 .. Phi_p]). The
+    /// same pairing with n_factor_a(), and the same reason: the transition is a
+    /// VAR over the whole state, not over the factors alone.
+    int n_favar_a() const { return n_state() * n_state() * p; }
+
+    /// How many periods before the sample an unobserved components trend has to
+    /// start from: one for a random walk, two for a smooth trend. They are
+    /// parameters with a prior of their own (`tau0`), as in Grant and Chan
+    /// (2017), rather than a diffuse initialisation.
+    int uc_trend_order() const { return trend == UcTrend::smooth ? 2 : 1; }
+
+    /// Free coefficients of an unobserved components cycle: the whole of
+    /// [Phi_1 .. Phi_p], k^2 p, or its diagonals alone under UcCycle::own, k p.
+    ///
+    /// Paired with n_factor_a() and n_favar_a() rather than read off either, for
+    /// the reason those two are paired: which count applies is a property of the
+    /// model, and the two coincide at k = 1, where a file laid out for the wrong
+    /// one would be read without complaint.
+    int n_uc_a() const { return cycle == UcCycle::own ? k * p : k * k * p; }
+
+    /// The shocks of an unobserved components model, one to each cycle and one
+    /// to each trend: 2k, cycle shocks first. That is the width of its error
+    /// precision, and the order its covariance block is triangular in.
+    int n_uc_shocks() const { return 2 * k; }
+
+    /// Free elements of the covariance block over those 2k shocks, (2k)(2k-1)/2
+    /// with "+covar" and zero without. Not n_psi(), which counts the k(k-1)/2 of
+    /// a k-equation VAR: an unobserved components model has a block over twice
+    /// as many shocks as it has series, and one series already has one free
+    /// element -- the trend shock's loading on the cycle shock, the correlation
+    /// Morley, Nelson and Zivot (2003) estimate.
+    int n_uc_psi() const { return covar ? k * (2 * k - 1) : 0; }
+
+    /// Throws std::invalid_argument if the counts cannot describe a model.
+    /// Cheap, and the message is far better than the failure it prevents --
+    /// a zero k turns the first reshape into a division by zero.
+    void validate() const;
+};
+
+} // namespace bayests
+
+#endif // BAYESTS_SPEC_H
