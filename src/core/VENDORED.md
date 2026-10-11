@@ -6,7 +6,23 @@
 project is here -- the core links neither HDF5 nor HighFive, prints nothing and
 reads no files, which is what makes it embeddable in an R package.
 
-The copy is **BayesTS `02a41de`**, BayesTS `main` after merging `bc27dfe` and `02a41de`. `bc27dfe` adds the damped
+The copy is **BayesTS `8c9865f`**, BayesTS `main` after merging `b1e8849`,
+`004b000` and `efd18b8`. `b1e8849` adds a volatility break to VarNormalWishart
+(Lenza and Primiceri 2022) and `004b000` Student t errors to it, with the
+adapted random walk proposal `UcNormalSkew` used moved out into the new
+`core/models/adaptive_walk.h` so the two share it; `efd18b8` has `bayests
+check` refuse a structural model it would be asked to score, and makes
+VecNormalGamma, VecNormalWishart and VecKlgs2010 raise that refusal as "this
+VEC" rather than under the name of the level VAR they score through. Of the
+files here it changes `spec.h`, `inputs.h`, `priors.h`, `results.h`,
+`inputs.cpp`, `completion_support.h` and `uc_normal_skew.cpp`, and adds
+`adaptive_walk.h` -- `UcNormalSkew`'s proposal, moved unchanged -- along with
+`student_t_support.h` and `volatility_break_support.h`, which the closure
+reaches through `inputs.cpp` and no model here uses. No draw moves: fixed-seed
+coefficients, log likelihoods and forecasts under gamma, Wishart, stochastic
+volatility and skewed errors are identical to a build of the previous copy.
+
+Before that the copy was **BayesTS `02a41de`**, BayesTS `main` after merging `bc27dfe` and `02a41de`. `bc27dfe` adds the damped
 trend and the signal equations to UcNormalGamma and UcNormalWishart, the
 European Commission's output gap models nested in them; `02a41de` moves
 `require_uc_signal_data()` from `uc_support.h` to `model_support.h`, so that
