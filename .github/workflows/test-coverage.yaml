@@ -1,0 +1,71 @@
+# Workflow derived from https://github.com/r-lib/actions/tree/v2/examples
+# Need help debugging build failures? Start at https://github.com/r-lib/actions#where-to-find-help
+#
+# The same workflow bvartools and dfmtools run, so that the packages are
+# measured alike. bayests is installed from GitHub until it is on CRAN, as in
+# R-CMD-check.yaml.
+#
+# Uploading needs a CODECOV_TOKEN secret on the repository. Without it the run
+# still computes the coverage and the upload step is the only thing that fails.
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+name: test-coverage.yaml
+
+permissions: read-all
+
+jobs:
+  test-coverage:
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+
+      # bayests is installed from GitHub until it is on CRAN; then drop the
+      # github:: entry and let it resolve from there.
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          extra-packages: any::covr, any::xml2, github::franzmohr/bayests-r
+          needs: coverage
+
+      - name: Test coverage
+        run: |
+          cov <- covr::package_coverage(
+            quiet = FALSE,
+            clean = FALSE,
+            install_path = file.path(normalizePath(Sys.getenv("RUNNER_TEMP"), winslash = "/"), "package")
+          )
+          covr::to_cobertura(cov)
+        shell: Rscript {0}
+
+      - uses: codecov/codecov-action@v7
+        with:
+          # Fail if error if not on PR, or if on PR and token is given
+          fail_ci_if_error: ${{ github.event_name != 'pull_request' || secrets.CODECOV_TOKEN }}
+          files: ./cobertura.xml
+          plugins: noop
+          disable_search: true
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Show testthat output
+        if: always()
+        run: |
+          ## --------------------------------------------------------------------
+          find '${{ runner.temp }}/package' -name 'testthat.Rout*' -exec cat '{}' \; || true
+        shell: bash
+
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-test-failures
+          path: ${{ runner.temp }}/package

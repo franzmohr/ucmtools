@@ -22,6 +22,20 @@ shared with bvartools and dfmtools.
 | `"sv"`, `"sv+covar"` | UcNormalStochvol | stochastic volatility                  |
 | `"skew"`       | UcNormalSkew     | skew normal or asymmetric Laplace, scales moving with an index |
 
+## Installation
+
+`ucmtools` builds on `bayests`, the R layer the BayesTS packages share, which is
+not on CRAN yet and is installed from GitHub first:
+
+```r
+# install.packages("remotes")
+remotes::install_github("franzmohr/bayests-r")
+remotes::install_github("franzmohr/ucmtools")
+```
+
+A C++17 compiler and GNU make are required to build from source -- Rtools on
+Windows, the Xcode command line tools on macOS.
+
 ## Example
 
 ```r
