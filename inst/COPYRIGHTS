@@ -52,13 +52,13 @@ BSD 3-Clause portion
     src/core/models/adaptive_walk.h
     src/core/models/completion_support.h
     src/core/models/constraint_support.h
+    src/core/models/error_scale_checks.h
     src/core/models/forecast_states.h
     src/core/models/model_support.h
     src/core/models/noncentred_support.h
     src/core/models/predictive_score.h
     src/core/models/shrinkage_support.h
     src/core/models/steady_state_support.h
-    src/core/models/student_t_support.h
     src/core/models/uc_constant_support.h
     src/core/models/uc_normal_gamma.cpp
     src/core/models/uc_normal_skew.cpp
@@ -66,7 +66,6 @@ BSD 3-Clause portion
     src/core/models/uc_normal_wishart.cpp
     src/core/models/uc_skew_support.h
     src/core/models/uc_support.h
-    src/core/models/volatility_break_support.h
     src/core/spec.cpp
 
 Data
