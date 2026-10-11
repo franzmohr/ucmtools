@@ -6,7 +6,17 @@
 project is here -- the core links neither HDF5 nor HighFive, prints nothing and
 reads no files, which is what makes it embeddable in an R package.
 
-The copy is **BayesTS `9f470f1`**, BayesTS `main` after merging `ae77301` and
+The copy is **BayesTS `deeebd0`**, BayesTS `main` after merging `c7d9f38`,
+which adds the volatility break to VecNormalWishart: the rows of the
+differenced response, of the short-run regressors and of the levels the
+cointegration term is built from are divided by the scale of their period, and
+the forecast and the score are the level VAR's, break included. Neither model
+is copied here; of the files here it changes `inputs.cpp`,
+`error_scale_checks.h` and the three shared headers. Fixed-seed coefficients,
+log likelihoods and forecasts of every error specification are identical to a
+clean build of the previous copy.
+
+Before that the copy was **BayesTS `9f470f1`**, BayesTS `main` after merging `ae77301` and
 `9f470f1`. `ae77301` lets the volatility break and the Student t errors of
 VarNormalWishart read a panel not observed whole -- `/data/train/constraints`,
 mixed frequencies and missing values -- through `completion_support.h`;
