@@ -19,10 +19,11 @@
   forecasts of every error specification, both cycle starts, are identical to
   those of a clean build of the previous version.
 
-* The vendored BayesTS core moves to `9f470f1`. Past `02a41de`, which adds the
+* The vendored BayesTS core moves to `deeebd0`. Past `02a41de`, which adds the
   damped trend and the signal equations exposed above, it brings the Student t
   errors and the volatility break of BayesTS's VarNormalWishart, which no model
-  here uses, and `9f470f1` keeps their samplers out of the files copied here.
+  here uses, and `9f470f1` keeps their samplers out of the files copied here;
+  `deeebd0` adds the break to BayesTS's VecNormalWishart.
   Draws are unchanged: fixed-seed coefficients, log likelihoods and forecasts of
   every error specification, with the cycle starting at zero and from its
   stationary distribution, are identical to those of a clean build of the
