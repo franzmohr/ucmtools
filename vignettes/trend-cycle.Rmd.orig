@@ -127,6 +127,20 @@ whose scales move with an index such as macroeconomic uncertainty
 (`error = "skew"`, after Huang, Luo and Wang, 2026), and several series at once,
 each with a trend and a cycle of its own.
 
+A smooth trend with a white-noise cycle, `p = 0`, is the model behind the
+Hodrick-Prescott filter (Hodrick and Prescott, 1997). Unlike the filter, the
+model estimates the smoothing parameter, the ratio of the variance of the cycle
+to that of the trend shock, rather than fixing it at 1600. The default priors
+centre that ratio near one. A tight prior on the precisions of the shocks,
+cycle first and trend second, centres it on 1600 instead:
+
+```{r hp, eval = FALSE}
+s2 <- stats::var(diff(y))
+hp <- create_ucmodel(y, p = 0, trend = "smooth", iterations = 10000, burnin = 5000)
+hp <- add_priors(hp, u_sigma = list(shape = 100, rate = 100 * s2 * c(1, 1 / 1600)))
+hp <- add_posterior_coefficients(add_initial_values(hp))
+```
+
 ## References
 
 Clark, P. K. (1987). The cyclical component of U.S. economic activity. *The
@@ -135,6 +149,9 @@ Quarterly Journal of Economics, 102*(4), 797--814.
 Grant, A. L., & Chan, J. C. C. (2017). A Bayesian model comparison for
 trend-cycle decompositions of output. *Journal of Money, Credit and Banking,
 49*(2--3), 525--552.
+
+Hodrick, R. J., & Prescott, E. C. (1997). Postwar U.S. business cycles: An
+empirical investigation. *Journal of Money, Credit and Banking, 29*(1), 1--16.
 
 Morley, J. C., Nelson, C. R., & Zivot, E. (2003). Why are the Beveridge-Nelson
 and unobserved-components decompositions of GDP so different? *The Review of
